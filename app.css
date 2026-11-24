@@ -150,6 +150,21 @@ nav.bottom { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; max-wid
 .big-btn .ic { width: 28px; height: 28px; color: var(--c, var(--blue)); }
 .big-btn:active { background: var(--soft); }
 
+/* ---------- Formel-Videos ---------- */
+.video-card { display: flex; align-items: center; gap: 14px; margin-top: 12px; padding: 16px; background: #fff; border-radius: 20px; text-decoration: none; color: var(--text); box-shadow: var(--shadow); }
+.video-card:active { background: var(--soft); }
+.vc-ic { width: 52px; height: 52px; border-radius: 16px; display: grid; place-items: center; background: var(--c, var(--blue)); color: #fff; flex: none; }
+.vc-ic .ic { width: 26px; height: 26px; }
+.vc-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.vc-text b { font-size: 17px; }
+button.topic-row { width: 100%; border: 0; border-bottom: 1px solid #EEF1F5; background: #fff; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+button.topic-row:last-child { border-bottom: 0; }
+.vnum { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; color: var(--c, var(--blue)); border: 3px solid var(--c, var(--blue)); flex: none; box-sizing: border-box; }
+.vnum.seen { background: var(--c, var(--blue)); color: #fff; }
+.vnum .ic { width: 18px; height: 18px; }
+.btn .ic { width: 20px; height: 20px; }
+.next-video { position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 22px); transform: translateX(-50%); max-width: 90vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* ---------- Thema ---------- */
 .topic-status { display: flex; align-items: center; gap: 16px; }
 .ts-text { flex: 1; min-width: 0; }

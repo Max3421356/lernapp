@@ -50,7 +50,7 @@
   const addDays = (s, n) => { const d = new Date(s + 'T12:00:00'); d.setDate(d.getDate() + n); return iso(d); };
   const STATS0 = () => ({ answered: 0, correct: 0, fixed: 0, combo: 0, bestCombo: 0, examsDone: 0, bestExamPct: 0 });
   const defaults = () => ({ items: {}, mistakes: {}, seen: {}, exams: {}, settings: { goal: 10, examDates: {} }, tips: {}, subjects: null,
-    daily: {}, goalDays: {}, stats: STATS0(), medals: {}, tiers: {}, best: 0, last: null });
+    daily: {}, goalDays: {}, stats: STATS0(), medals: {}, tiers: {}, best: 0, last: null, vseen: {} });
   let P = loadP();
   function loadP() {
     try {
@@ -123,7 +123,7 @@
     { id: 'combo', name: 'Zehn am Stück', desc: '10 hintereinander gleich richtig', color: 'purple', glyph: 'star', test: () => P.stats.bestCombo >= 10 },
     { id: 'fix', name: 'Fehlerjäger', desc: '10 alte Fehler verbessert', color: 'red', glyph: 'repeat', test: () => P.stats.fixed >= 10 },
     { id: 'video', name: 'Kino', desc: 'Alle Videos eines Fachs', color: 'blue', glyph: 'play',
-      test: () => SUBJECTS.some((s) => { const v = s.topics.filter((t) => hasVideo(t)); return v.length > 0 && v.every((t) => (P.seen[t.id] || {}).video); }) },
+      test: () => SUBJECTS.some((s) => { const v = playlistOf(s); return v.length > 0 && v.every(videoSeen); }) },
     { id: 'fit', name: 'Klausurfit', desc: 'Klausurthemen auf Silber', color: 'gold', glyph: 'trophy',
       test: () => SUBJECTS.some((s) => { const f = s.topics.filter((t) => t.focus); return f.length > 0 && f.every((t) => TIER_RANK[P.tiers[t.id]] >= 2); }) },
     { id: 'exam', name: 'Probeklausur', desc: 'Erste Probeklausur', color: 'green', glyph: 'exam', test: () => P.stats.examsDone >= 1 },
@@ -205,6 +205,21 @@
     saveP();
   }
   const hasVideo = (t) => !!(t.video && META.videos && META.videos[t.video]);
+  const topicVideo = (t) => ({ video: t.video, title: t.title, topic: t.id });
+  // Video-Liste eines Fachs (nur Videos, die es wirklich gibt); ohne Liste: die Themen-Videos
+  const playlistOf = (s) => {
+    const pl = (s.playlist || []).filter((e) => META.videos && META.videos[e.video]);
+    return pl.length ? pl : s.topics.filter(hasVideo).map(topicVideo);
+  };
+  const videoSeen = (e) => !!((P.vseen || {})[e.video] || (e.topic && (P.seen[e.topic] || {}).video));
+  const fmtDur = (sec) => { if (!sec) return ''; const t = Math.round(sec); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0') + ' Min.'; };
+  function markVideo(e) {
+    if ((P.vseen || {})[e.video] && (!e.topic || (P.seen[e.topic] || {}).video)) return;
+    P.vseen = Object.assign({}, P.vseen, { [e.video]: true });
+    if (e.topic) P.seen[e.topic] = Object.assign({}, P.seen[e.topic], { video: true });
+    saveP();
+    checkRewards(null);
+  }
   function markSeen(tid, key) { P.seen[tid] = Object.assign({}, P.seen[tid], { [key]: true }); saveP(); if (key === 'video') checkRewards(null); }
 
   // Wochenleiste: Mo–So, Tagesziel erreicht = gefüllt
@@ -275,6 +290,7 @@
       if (!s) return viewHome();
       if (c === 'klausur') return viewExams(s);
       if (c === 'fehler') return viewMistakes(s);
+      if (c === 'videos') return viewVideos(s);
       return viewSubject(s);
     }
     if (a === 't' && b) {
@@ -304,7 +320,7 @@
     const open = (t) => {
       const s = subjectById(t._subject);
       const seen = P.seen[t.id] || {};
-      if (hasVideo(t) && !seen.video) return { title: t.title, sub: s.name + ' · Video ansehen', color: colorOf(t), run: () => { P.last = t.id; saveP(); playVideo(t); } };
+      if (hasVideo(t) && !seen.video) return { title: t.title, sub: s.name + ' · Video ansehen', color: colorOf(t), run: () => { P.last = t.id; saveP(); playVideo(topicVideo(t)); } };
       if (!seen.cards) return { title: t.title, sub: s.name + ' · Erklärung lesen', color: colorOf(t), run: () => go('#/t/' + t.id + '/lernen') };
       return { title: t.title, sub: s.name + ' · Üben', color: colorOf(t), run: () => go('#/t/' + t.id + '/ueben') };
     };
@@ -413,8 +429,16 @@
           el('span', { class: 'tr-sub' }, t.focus ? el('span', { class: 'chip', style: { '--c': s.color }, text: 'Klausur' }) : null, el('span', { class: 'small muted', text: m + ' %' }))),
         icon('chev', 'chev')));
     }
+    const pl = playlistOf(s);
+    const seenN = pl.filter(videoSeen).length;
+    const mins = Math.round(pl.reduce((a, e) => a + (e.sec || 0), 0) / 60);
+    const vcard = pl.length > 1 ? el('a', { class: 'video-card', href: '#/f/' + s.id + '/videos', style: { '--c': s.color } },
+      el('span', { class: 'vc-ic' }, icon('play')),
+      el('span', { class: 'vc-text' }, el('b', { text: 'Alle Formeln erklärt' }),
+        el('span', { class: 'small muted', text: pl.length + ' Videos' + (mins ? ' · ca. ' + mins + ' Min.' : '') + (seenN ? ' · ' + seenN + ' gesehen' : '') })),
+      icon('chev', 'chev')) : null;
     screen({ title: s.name, sub: s.sub, back: '#/', color: s.color, nav: 'home' },
-      examLine,
+      examLine, vcard,
       el('div', { class: 'two-btns', style: { '--c': s.color } },
         el('a', { class: 'big-btn', href: '#/f/' + s.id + '/klausur' }, icon('exam'), el('b', { text: 'Probeklausur' })),
         el('a', { class: 'big-btn', href: '#/f/' + s.id + '/fehler' }, icon('alert'), el('b', { text: 'Häufige Fehler' }))),
@@ -431,6 +455,7 @@
     const m = mastery(t);
     const tier = P.tiers[t.id] || tierOf(m);
     const nt = nextTierInfo(m);
+    const ventry = (s.playlist || []).find((e) => e.topic === t.id);
     const status = el('section', { class: 'card topic-status' },
       medal({ color: tier || 'gold', locked: !tier, glyph: 'star', size: 58 }),
       el('div', { class: 'ts-text' },
@@ -441,7 +466,7 @@
       el('span', { class: 'act-ic' }, icon(ic)), el('span', { class: 'act-text' }, el('b', { text: label }), el('span', { class: 'small', text: sub })),
       done ? el('span', { class: 'act-done' }, icon('check')) : icon('chev', 'chev'));
     const actions = el('section', { class: 'actions' },
-      hasVideo(t) ? btn('play', 'Video ansehen', 'Bo und Nick erklären', () => playVideo(t), false, seen.video) : null,
+      hasVideo(t) ? btn('play', 'Video ansehen', 'Erklärvideo' + (ventry && ventry.sec ? ' · ' + fmtDur(ventry.sec) : ''), () => playVideo(topicVideo(t)), false, seen.video) : null,
       btn('book', 'Erklärung', t.cards.length + ' Merkkarten + Beispiel', () => go('#/t/' + t.id + '/lernen'), false, seen.cards && seen.example),
       btn('pencil', 'Üben', t.exercises.length + ' Aufgaben', () => go('#/t/' + t.id + '/ueben'), true, false));
     screen({ title: t.title, sub: s.name, back: '#/f/' + s.id, color: colorOf(t), nav: 'home' },
@@ -450,25 +475,51 @@
   }
 
   // ---------- Video ----------
-  async function playVideo(t) {
-    const info = META.videos[t.video];
+  // e = {video, title, topic}; list = Video-Liste, dann geht es nach dem Ende von selbst weiter
+  async function playVideo(e, list) {
+    const info = META.videos[e.video];
+    if (!info) { toast('Das Video gibt es noch nicht.'); return; }
     const overlay = el('div', { class: 'overlay video-ov' });
     const status = el('div', { class: 'video-status', text: 'Video wird geladen …' });
-    const close = el('button', { class: 'icon-btn ov-close', 'aria-label': 'Schließen', onclick: () => overlay.remove() }, icon('close'));
-    overlay.appendChild(close);
-    overlay.appendChild(status);
+    const closeAll = () => { clearTimeout(overlay._next); overlay.remove(); route(); };
+    const close = el('button', { class: 'icon-btn ov-close', 'aria-label': 'Schließen', onclick: closeAll }, icon('close'));
+    put(overlay, close, status);
     document.body.appendChild(overlay);
     try {
       const url = await LCrypto.videoUrl(KEY, info.file);
       const v = el('video', { class: 'video', src: url, controls: true, playsinline: true, autoplay: true, preload: 'auto' });
-      v.addEventListener('timeupdate', () => { if (v.duration && v.currentTime / v.duration > 0.8 && !(P.seen[t.id] || {}).video) markSeen(t.id, 'video'); });
-      v.addEventListener('ended', () => { if (!(P.seen[t.id] || {}).video) markSeen(t.id, 'video'); });
+      v.addEventListener('timeupdate', () => { if (v.duration && v.currentTime / v.duration > 0.8) markVideo(e); });
+      const idx = list ? list.findIndex((x) => x.video === e.video) : -1;
+      const next = idx >= 0 && idx + 1 < list.length ? list[idx + 1] : null;
+      const goNext = () => { clearTimeout(overlay._next); overlay.remove(); playVideo(next, list); };
+      v.addEventListener('ended', () => {
+        markVideo(e);
+        if (!next) return;
+        overlay.appendChild(el('button', { class: 'btn primary next-video', onclick: goNext }, 'Weiter: ' + next.title));
+        overlay._next = setTimeout(() => { if (overlay.isConnected) goNext(); }, 4000);
+      });
+      v.addEventListener('play', () => { clearTimeout(overlay._next); const nb = overlay.querySelector('.next-video'); if (nb) nb.remove(); });
       status.replaceWith(v);
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); route(); } });
-      close.onclick = () => { overlay.remove(); route(); };
-    } catch (e) {
+      overlay.addEventListener('click', (ev) => { if (ev.target === overlay) closeAll(); });
+    } catch (err) {
       status.textContent = 'Das Video konnte nicht geladen werden. Prüfe die Internetverbindung.';
     }
+  }
+
+  // ---------- Alle Formel-Videos eines Fachs ----------
+  function viewVideos(s) {
+    const pl = playlistOf(s);
+    if (!pl.length) return viewSubject(s);
+    const first = pl.find((e) => !videoSeen(e)) || pl[0];
+    const rows = el('section', { class: 'topic-list' }, pl.map((e, i) => el('button', { class: 'topic-row vrow', onclick: () => playVideo(e, pl) },
+      el('span', { class: 'vnum' + (videoSeen(e) ? ' seen' : ''), style: { '--c': s.color } }, videoSeen(e) ? icon('check') : String(i + 1)),
+      el('span', { class: 'tr-text' }, el('b', { text: e.title }), el('span', { class: 'small muted', text: fmtDur(e.sec) })),
+      icon('play', 'chev'))));
+    screen({ title: 'Alle Formeln erklärt', sub: s.name, back: '#/f/' + s.id, color: s.color, nav: false },
+      el('p', { class: 'muted', text: 'Zu jeder Formel ein kurzes Video: woran du sie erkennst, wie sie aufgebaut ist, ein Beispiel und ein Kurz-Check.' }),
+      el('button', { class: 'btn primary block', style: { background: s.color }, onclick: () => playVideo(first, pl) }, icon('play'),
+        first === pl[0] ? 'Alle abspielen' : 'Weiter mit Video ' + (pl.indexOf(first) + 1)),
+      el('h2', { text: pl.length + ' Videos' }), rows);
   }
 
   // ---------- Erklärung: Merkkarten, dann Beispiel ----------
