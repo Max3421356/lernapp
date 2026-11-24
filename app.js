@@ -199,6 +199,7 @@
       return typed.concat(extra);
     }
     const t = topicById(l.topic);
+    if (!t) return [];
     const ex = t.exercises;
     const formel = ex.filter((e) => e.type === 'formel' || e.type === 'luecke');
     const writing = ex.filter((e) => e.type === 'schreiben');
@@ -364,11 +365,15 @@
   // =====================================================================
   // Rahmen und Navigation
   // =====================================================================
+  let flushEssay = null;
   function screen(opts, ...content) {
     closeMenu();
+    if (flushEssay) { flushEssay(); flushEssay = null; }
     app.innerHTML = '';
     app.className = opts.cls || '';
-    const top = el('header', { class: 'top' + (opts.color ? ' colored' : ''), style: opts.color ? { background: opts.color } : null });
+    // Akzentfarbe der Seite (Knöpfe, Eingabefelder) = Farbe der Kopfzeile
+    if (opts.color) app.style.setProperty('--accent', opts.color); else app.style.removeProperty('--accent');
+    const top = el('header', { class: 'top' + (opts.color ? ' colored' : ''), style: opts.color ? { '--hc': opts.color } : null });
     if (opts.back) top.appendChild(el('button', { class: 'icon-btn', 'aria-label': 'Zurück', onclick: () => go(opts.back) }, icon('back')));
     top.appendChild(el('div', { class: 'top-title' }, el('h1', { text: opts.title || 'Lernapp' }), opts.sub ? el('div', { class: 'top-sub', text: opts.sub }) : null));
     if (opts.right) top.appendChild(opts.right);
@@ -382,8 +387,11 @@
   function go(hash) { if (location.hash === hash) route(); else location.hash = hash; }
   window.addEventListener('hashchange', () => route());
 
+  let updateReady = false;
   function route() {
     if (!COURSE) return;
+    // neue Version ist da: beim Weg zurück zur Startseite einmal neu laden (nie mitten in einer Runde)
+    if (updateReady && !location.hash.replace(/^#\/?/, '')) { updateReady = false; location.reload(); return; }
     if (examState && !examState.submitted && !location.hash.startsWith('#/klausur/')) {
       if (!confirm('Die Probeklausur läuft noch. Wirklich verlassen? Deine Antworten gehen verloren.')) { history.back(); return; }
       stopExamTimer();
@@ -418,7 +426,7 @@
     if (a === 'klausur' && b) return viewExamStart(b);
     if (a === 'aufsatz' && b) return viewEssay(b);
     if (a === 'einstellungen') return viewSettings();
-    if (a === 'session') return session ? renderSession() : viewPath();
+    if (a === 'session') return session && !session.ended ? renderSession() : viewPath();
     return viewPath();
   }
 
@@ -428,19 +436,20 @@
   function openMenu() {
     closeMenu();
     const s = curSubject();
-    const row = (ic, label, hash) => el('a', { class: 'menu-row', href: hash, onclick: () => closeMenu() }, icon(ic), el('span', { text: label }), icon('chev', 'chev'));
+    const tile = (ic, c) => el('span', { class: 'mi', style: { '--c': c } }, icon(ic));
+    const row = (ic, label, hash, c) => el('a', { class: 'menu-row', href: hash, onclick: () => closeMenu() }, tile(ic, c), el('span', { text: label }), icon('chev', 'chev'));
     const others = mySubjects().filter((x) => x.id !== s.id);
     const sheet = el('div', { class: 'menu-sheet', role: 'dialog', 'aria-label': 'Menü' },
       el('div', { class: 'menu-grab' }),
-      row('list', 'Themen-Übersicht', '#/themen'),
-      playlistOf(s).length ? row('play', 'Alle Videos', '#/f/' + s.id + '/videos') : null,
-      s.wordbank ? row('book', 'Linking words', '#/f/' + s.id + '/woerter') : null,
-      (s.exams || []).length ? row('exam', 'Probeklausur', '#/f/' + s.id + '/klausur') : null,
-      (s.essays || []).length ? row('pencil', ((s.levelNames || {}).essay || 'Probe-Text') + ' schreiben', '#/f/' + s.id + '/aufsaetze') : null,
-      row('alert', 'Häufige Fehler', '#/f/' + s.id + '/fehler'),
-      row('trophy', 'Erfolge', '#/erfolge'),
-      others.map((x) => el('button', { class: 'menu-row', onclick: () => { P.cur = x.id; saveP(); closeMenu(); go('#/'); } }, icon('grid'), el('span', { text: 'Fach wechseln: ' + x.name }), icon('chev', 'chev'))),
-      row('gear', 'Einstellungen', '#/einstellungen'));
+      row('list', 'Themen-Übersicht', '#/themen', '#4F5BD5'),
+      playlistOf(s).length ? row('play', 'Alle Videos', '#/f/' + s.id + '/videos', '#DD4238') : null,
+      s.wordbank ? row('book', 'Linking words', '#/f/' + s.id + '/woerter', '#0E9F8E') : null,
+      (s.exams || []).length ? row('exam', 'Probeklausur', '#/f/' + s.id + '/klausur', '#1F2A44') : null,
+      (s.essays || []).length ? row('pencil', ((s.levelNames || {}).essay || 'Probe-Text') + ' schreiben', '#/f/' + s.id + '/aufsaetze', '#8A4FD8') : null,
+      row('alert', 'Häufige Fehler', '#/f/' + s.id + '/fehler', '#E8762B'),
+      row('trophy', 'Erfolge', '#/erfolge', '#C98A00'),
+      others.map((x) => el('button', { class: 'menu-row', onclick: () => { P.cur = x.id; saveP(); closeMenu(); go('#/'); } }, tile('grid', x.color), el('span', { text: 'Fach wechseln: ' + x.name }), icon('chev', 'chev'))),
+      row('gear', 'Einstellungen', '#/einstellungen', '#687385'));
     menuEl = el('div', { class: 'menu-ov', onclick: (e) => { if (e.target === menuEl) closeMenu(); } }, sheet);
     document.body.appendChild(menuEl);
     requestAnimationFrame(() => menuEl && menuEl.classList.add('show'));
@@ -481,7 +490,12 @@
       if (group !== lastGroup) {
         lastGroup = group;
         const t = l.topic ? topicById(l.topic) : null;
-        if (t) path.appendChild(el('div', { class: 'path-head', style: { '--c': l.color } }, el('b', { text: t.title }), t.focus ? el('span', { class: 'ph-chip', text: 'Klausur' }) : null));
+        if (t) {
+          const ts = topicStars(t);
+          path.appendChild(el('div', { class: 'path-head', style: { '--c': l.color } }, el('b', { text: t.title }),
+            el('span', { class: 'ph-right' }, t.focus ? el('span', { class: 'ph-chip', text: 'Klausur' }) : null,
+              el('span', { class: 'ph-stars', 'aria-label': ts.got + ' von ' + ts.max + ' Sternen' }, stars(1, 14).firstChild, String(ts.got) + '/' + ts.max))));
+        }
         else if (l.kind === 'exam') path.appendChild(el('div', { class: 'path-head', style: { '--c': l.color } }, el('b', { text: 'Probeklausuren' })));
         else if (l.kind === 'essay') path.appendChild(el('div', { class: 'path-head', style: { '--c': l.color } }, el('b', { text: l.name + 's' })));
       }
@@ -497,9 +511,11 @@
       done ? stars(P.levels[l.id].stars, 18) : isCur ? null : el('span', { class: 'lvl-n', text: l.name }));
       path.appendChild(node);
     });
-    const L0 = L[cur];
     const allDone = L.every(levelDone);
-    const label = allDone ? 'Alles geschafft – nochmal üben' : (L.some(levelDone) ? 'Weiter: Level ' : 'Los geht’s: Level ') + L0.n;
+    // alles geschafft: das erste Level ohne 3 Sterne verbessern, sonst die letzte Wiederholung
+    const weak = allDone ? L.find((l) => (P.levels[l.id].stars || 0) < 3) : null;
+    const L0 = allDone ? weak || L.filter((l) => l.kind === 'review').pop() || L[cur] : L[cur];
+    const label = allDone ? (weak ? 'Mehr Sterne: Level ' + L0.n : 'Alles geschafft – nochmal üben') : (L.some(levelDone) ? 'Weiter: Level ' : 'Los geht’s: Level ') + L0.n;
     const startBar = el('div', { class: 'start-bar' },
       el('button', { class: 'btn primary block start-btn', style: { background: L0.color }, onclick: () => go('#/level/' + encodeURIComponent(L0.id)) },
         el('span', null, el('b', { text: label }), el('small', { text: (L0.topic ? L0.title + ' · ' : '') + L0.name }))));
@@ -510,10 +526,13 @@
   // ---------- Level starten (bei neuem Thema erst das Video anbieten) ----------
   function startLevel(l, opts) {
     opts = opts || {};
-    if (l.kind === 'exam') { go('#/klausur/' + l.exam); return; }
-    if (l.kind === 'essay') { go('#/aufsatz/' + l.essay); return; }
+    const via = location.hash.startsWith('#/level/') ? (h) => location.replace(h) : go;
+    if (l.kind === 'exam') { via('#/klausur/' + l.exam); return; }
+    if (l.kind === 'essay') { via('#/aufsatz/' + l.essay); return; }
     const t = l.topic ? topicById(l.topic) : null;
-    if (!opts.skipIntro && l.kind === 'choose' && t && hasVideo(t) && !(P.seen[t.id] || {}).video && !(P.seen[t.id] || {}).intro) return viewLevelIntro(l);
+    // neues Thema: erst Video oder (ohne Video) die Merkkarten anbieten
+    const seen = t ? P.seen[t.id] || {} : {};
+    if (!opts.skipIntro && l.kind === 'choose' && t && !seen.intro && (hasVideo(t) ? !seen.video : (t.cards || []).length && !seen.cards)) return viewLevelIntro(l);
     const items = levelItems(l);
     if (!items.length) { toast('Für dieses Level gibt es noch keine Aufgaben.'); go('#/'); return; }
     startSession(items, 'Level ' + l.n, '#/', t, l);
@@ -523,15 +542,20 @@
     const s = subjectById(l.subject);
     const ventry = (s.playlist || []).find((e) => e.topic === t.id);
     const go2 = () => { markSeen(t.id, 'intro'); startLevel(l, { skipIntro: true }); };
+    const vid = hasVideo(t);
+    const nCards = (t.cards || []).length;
     screen({ title: 'Level ' + l.n, sub: t.title, back: '#/', color: colorOf(t), cls: 'intro' },
       el('section', { class: 'card intro-card', style: { '--c': colorOf(t) } },
-        el('span', { class: 'intro-ic' }, icon('play')),
+        el('span', { class: 'intro-ic' }, icon(vid ? 'play' : 'book')),
         el('div', { class: 'eyebrow', text: 'Neues Thema' }),
         el('h2', { text: t.title }),
-        el('p', { class: 'muted', text: 'Schau dir zuerst das kurze Video an. Danach geht es direkt mit dem Level los.' })),
-      el('button', { class: 'btn primary block', style: { background: colorOf(t) }, onclick: () => playVideo(topicVideo(t), null, go2) }, icon('play'),
-        'Video ansehen' + (ventry && ventry.sec ? ' (' + fmtDur(ventry.sec).replace(' Min.', '') + ')' : '')),
-      el('button', { class: 'btn ghost block', onclick: go2 }, 'Ohne Video starten'));
+        t.short ? el('p', { class: 'intro-short', text: t.short }) : null,
+        el('p', { class: 'muted', text: vid ? 'Schau dir zuerst das kurze Video an. Danach geht es direkt mit dem Level los.'
+          : 'Lies zuerst die ' + nCards + ' kurzen Merkkarten. Danach geht es direkt mit dem Level los.' })),
+      vid ? el('button', { class: 'btn primary block', style: { background: colorOf(t) }, onclick: () => playVideo(topicVideo(t), null, go2) }, icon('play'),
+        'Video ansehen' + (ventry && ventry.sec ? ' (' + fmtDur(ventry.sec).replace(' Min.', '') + ')' : ''))
+        : el('button', { class: 'btn primary block', style: { background: colorOf(t) }, onclick: () => viewCards(t, go2) }, icon('book'), 'Kurz erklärt (' + nCards + ' Karten)'),
+      el('button', { class: 'btn ghost block', onclick: go2 }, vid ? 'Ohne Video starten' : 'Direkt starten'));
   }
 
   // =====================================================================
@@ -544,15 +568,16 @@
   }
   function viewThemen(s) {
     const list = el('section', { class: 'topic-list' });
-    for (const t of s.topics) {
+    s.topics.forEach((t, i) => {
       const ts = topicStars(t);
-      list.appendChild(el('a', { class: 'topic-row', href: '#/t/' + t.id },
-        el('span', { class: 'tr-dot', style: { background: colorOf(t) } }),
+      list.appendChild(el('a', { class: 'topic-row', href: '#/t/' + t.id, style: { '--c': colorOf(t) } },
+        el('span', { class: 'tr-num', text: String(i + 1) }),
         el('span', { class: 'tr-text' }, el('b', { text: t.title }),
-          el('span', { class: 'tr-sub' }, t.focus ? el('span', { class: 'chip', style: { '--c': s.color }, text: 'Klausur' }) : null,
-            el('span', { class: 'small muted', text: '★ ' + ts.got + ' von ' + ts.max }))),
+          el('span', { class: 'tr-sub' }, el('span', { class: 'tr-bar' }, el('i', { style: { width: Math.round(100 * ts.got / (ts.max || 1)) + '%' } })),
+            el('span', { class: 'small muted', text: '★ ' + ts.got + '/' + ts.max }),
+            t.focus ? el('span', { class: 'chip', style: { '--c': s.color }, text: 'Klausur' }) : null)),
         icon('chev', 'chev')));
-    }
+    });
     screen({ title: 'Themen', sub: s.name, back: '#/', color: s.color },
       el('p', { class: 'muted', text: 'Hier kannst du ein Thema gezielt anschauen oder üben.' }), list);
   }
@@ -574,7 +599,7 @@
     const btn = (ic, label, sub, onclick, done) => el('button', { class: 'action', style: { '--c': colorOf(t) }, onclick },
       el('span', { class: 'act-ic' }, icon(ic)), el('span', { class: 'act-text' }, el('b', { text: label }), el('span', { class: 'small', text: sub })),
       done ? el('span', { class: 'act-done' }, icon('check')) : icon('chev', 'chev'));
-    screen({ title: t.title, sub: s.name, back: '#/themen', color: colorOf(t) },
+    screen({ title: t.title, sub: s.name, back: '#/f/' + s.id, color: colorOf(t) },
       levelRow,
       el('section', { class: 'actions' },
         hasVideo(t) ? btn('play', 'Video', 'Erklärvideo' + (ventry && ventry.sec ? ' · ' + fmtDur(ventry.sec) : ''), () => playVideo(topicVideo(t)), seen.video) : null,
@@ -637,9 +662,10 @@
   }
 
   // ---------- Erklärung: Merkkarten, dann Beispiel ----------
-  function viewCards(t) {
+  // after: beim Einstieg in ein neues Level – nach der letzten Karte geht es direkt los
+  function viewCards(t, after) {
     let i = 0;
-    const main = screen({ title: 'Erklärung', sub: t.title, back: '#/t/' + t.id, color: colorOf(t) });
+    const main = screen({ title: after ? 'Kurz erklärt' : 'Erklärung', sub: t.title, back: after ? '#/' : '#/t/' + t.id, color: colorOf(t) });
     function draw() {
       main.innerHTML = '';
       const c = t.cards[i];
@@ -653,7 +679,7 @@
         el('button', { class: 'btn ghost', disabled: i === 0, onclick: () => { i--; draw(); } }, 'Zurück'),
         i < t.cards.length - 1
           ? el('button', { class: 'btn primary', style: { background: colorOf(t) }, onclick: () => { i++; draw(); } }, 'Weiter')
-          : el('button', { class: 'btn primary', style: { background: colorOf(t) }, onclick: () => { markSeen(t.id, 'cards'); go('#/t/' + t.id + '/beispiel'); } }, 'Zum Beispiel'));
+          : el('button', { class: 'btn primary', style: { background: colorOf(t) }, onclick: () => { markSeen(t.id, 'cards'); if (after) after(); else go('#/t/' + t.id + '/beispiel'); } }, after ? 'Los geht’s' : 'Zum Beispiel'));
       put(main, card, dots, nav);
       let x0 = null;
       card.addEventListener('touchstart', (e) => { x0 = e.touches[0].clientX; }, { passive: true });
@@ -774,11 +800,16 @@
     const t = topicById(ex._topic) || s.topic;
     const l = s.level;
     const col = l ? l.color : t ? colorOf(t) : '#2F7DE1';
-    const prog = el('div', { class: 'progress' }, el('i', { style: { width: Math.round(100 * s.idx / s.items.length) + '%', background: col } }));
-    const sub = l ? (l.topic ? l.title + ' · ' : '') + l.name : (s.idx + 1) + ' / ' + s.items.length;
+    const prog = el('div', { class: 'progress-row' }, el('div', { class: 'progress' }, el('i', { style: { width: Math.max(4, Math.round(100 * s.idx / s.items.length)) + '%', background: col } })),
+      el('span', { class: 'prog-n', text: (s.idx + 1) + '/' + s.items.length }));
+    // die Zahl steht schon neben dem Balken
+    const sub = l ? (l.topic ? l.title + ' · ' : '') + l.name : (t && t.title !== s.title ? t.title : null);
     const main = screen({ title: s.title, sub, back: s.back, color: col, cls: 'session' });
     main.appendChild(prog);
+    let finished = false;
     const done = (outcome, mids) => {
+      if (finished) return;
+      finished = true;
       grade(ex.id, outcome);
       s.results.push({ id: ex.id, outcome });
       (mids || []).forEach((m) => s.mids.push(m));
@@ -808,6 +839,7 @@
   function renderSessionEnd() {
     const s = session;
     const { n, ok } = firstTryScore(s);
+    s.ended = true;
     const parts = [
       el('section', { class: 'card done-card' },
         el('div', { class: 'eyebrow', text: 'Runde fertig' }),
@@ -823,6 +855,7 @@
     const s = session, l = s.level;
     const { n, ok } = firstTryScore(s);
     const got = starsFor(ok, n);
+    s.ended = true;
     const before = (P.levels[l.id] || {}).stars || 0;
     const rec = P.levels[l.id] || { stars: 0, plays: 0 };
     rec.stars = Math.max(rec.stars || 0, got);
@@ -843,13 +876,27 @@
         before && got > before ? el('div', { class: 'small lr-better', text: 'Neuer Rekord für dieses Level!' }) : null,
         got < 3 ? el('div', { class: 'small muted', text: got === 1 ? 'Ab 60 % gibt es 2 Sterne, ab 90 % 3 Sterne.' : 'Ab 90 % gibt es 3 Sterne.' }) : null,
         goalLine()),
-      next ? el('button', { class: 'btn primary block', style: { background: next.color }, onclick: () => startLevel(next) },
-        next.kind === 'exam' ? 'Weiter: Probeklausur' : 'Weiter: Level ' + next.n) : null,
+      next ? el('button', { class: 'btn primary block', style: { background: next.color }, onclick: () => location.replace('#/level/' + encodeURIComponent(next.id)) },
+        'Weiter: ' + nextName(next)) : null,
       el('div', { class: 'row-links' },
         el('button', { class: 'link-btn', onclick: () => startLevel(l, { skipIntro: true }) }, 'Level nochmal'),
         el('button', { class: 'link-btn', onclick: () => go('#/') }, 'Zur Übersicht')),
       ...roundMistakes(s)];
     screen({ title: 'Level ' + l.n, back: '#/', color: l.color }, ...parts);
+    if (got === 3) confetti(app.querySelector('.level-result'));
+  }
+  const nextName = (l) => (l.kind === 'exam' || l.kind === 'essay' ? l.name : 'Level ' + l.n);
+  // kleines Konfetti für 3 Sterne (nicht bei „weniger Bewegung“)
+  function confetti(host) {
+    if (!host || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches)) return;
+    const cols = ['#F5B301', '#4F5BD5', '#0E9F8E', '#E8762B', '#DD4238', '#2F7DE1'];
+    const box = el('div', { class: 'confetti', 'aria-hidden': 'true' });
+    for (let i = 0; i < 26; i++) {
+      box.appendChild(el('i', { style: { left: (8 + Math.random() * 84) + '%', background: cols[i % cols.length], animationDelay: (Math.random() * 0.25).toFixed(2) + 's',
+        '--dx': Math.round((Math.random() - 0.5) * 140) + 'px', '--r': Math.round(Math.random() * 720 - 360) + 'deg' } }));
+    }
+    host.appendChild(box);
+    setTimeout(() => box.remove(), 2400);
   }
 
   // ---------- eine Aufgabe ----------
@@ -954,7 +1001,7 @@
       const res = TextCheck.runChecks(ta.value, ex.checks, sub.wordbank);
       const allOk = res.every((r) => r.ok);
       fbSlot.innerHTML = '';
-      fbSlot.appendChild(el('div', { class: 'feedback ' + (allOk ? 'ok' : 'warn') }, el('b', { class: 'fb-title', text: allOk ? 'Alle Punkte erfüllt' : 'Fast – schau dir die roten Punkte an' }), checklistEl(res)));
+      fbSlot.appendChild(el('div', { class: 'feedback ' + (allOk ? 'ok' : 'warn') }, el('b', { class: 'fb-title' }, fbIcon(allOk ? 'ok' : 'warn'), allOk ? 'Alle Punkte erfüllt' : 'Fast – schau dir die roten Punkte an'), checklistEl(res)));
       if (allOk) finish(true);
       else { btnCheck.textContent = 'Nochmal prüfen'; btnSol.style.display = ''; }
       fbSlot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -963,16 +1010,17 @@
       el('section', { class: 'card task-card', lang: 'en' }, el('b', { text: ex.task })), ta, wc, fbSlot, el('div', { class: 'row-btns' }, btnSol, btnCheck, btnNext));
     return wrap;
   }
+  const fbIcon = (cls) => el('span', { class: 'fb-ic' }, icon(cls === 'ok' ? 'check' : cls === 'warn' ? 'alert' : 'close'));
   function feedbackBox(r) {
     const cls = r.status === 'richtig' ? 'ok' : r.status === 'fast' ? 'warn' : 'bad';
-    const fb = el('div', { class: 'feedback ' + cls, role: 'status' }, el('b', { class: 'fb-title', text: r.title || (cls === 'ok' ? 'Richtig' : 'Noch nicht richtig') }));
+    const fb = el('div', { class: 'feedback ' + cls, role: 'status' }, el('b', { class: 'fb-title' }, fbIcon(cls), r.title || (cls === 'ok' ? 'Richtig' : 'Noch nicht richtig')));
     for (const m of r.msgs || []) fb.appendChild(el('p', { text: m }));
     const mm = (r.mids || []).map(mistakeById).filter(Boolean)[0];
     if (mm) fb.appendChild(mistakeCard(mm, P.mistakes[mm.id] && P.mistakes[mm.id].n));
     return fb;
   }
   function viewFormel(ex, done) {
-    let attempts = 0, firstStatus = null, solved = false, shown = false;
+    let attempts = 0, firstStatus = null, solved = false, shown = false, closed = false;
     const lastMids = [];
     const wrap = el('div', { class: 'ex ex-formel' });
     const fi = formulaInput({ fns: FNS[ex._topic] || FNS.exam, onEnter: () => check() });
@@ -1000,6 +1048,7 @@
       el('div', { class: 'hint-line small muted' }, 'Formel für ', el('b', { text: ex.target }), ex.fill ? ' · herunterziehbar bis ' + ex.fill.split(':')[1] : '', ' · Zellen antippen fügt sie ein'),
       fi.box, fbSlot, el('div', { class: 'row-btns' }, btnSol, btnCheck, btnNext));
     function check() {
+      if (closed) return;
       const r = Checker.checkFormula(ex, fi.value(), { attempt: attempts + 1 });
       if (r.status === 'leer') { toast(r.msgs[0]); return; }
       attempts++;
@@ -1011,6 +1060,7 @@
       fbSlot.appendChild(feedbackBox(r));
       if (r.status === 'richtig') {
         solved = true;
+        closed = true;
         fbSlot.appendChild(el('div', { class: 'solution' }, el('span', { class: 'small muted', text: 'Musterlösung' }), formulaBox(ex.solution), ex.explain ? el('p', { class: 'small', text: ex.explain }) : null));
         btnCheck.style.display = 'none';
         btnSol.style.display = 'none';
@@ -1025,6 +1075,7 @@
     }
     function showSolution() {
       shown = true;
+      closed = true;
       showResult(ex.solution, 'richtig');
       fbSlot.innerHTML = '';
       fbSlot.appendChild(el('div', { class: 'solution' }, el('span', { class: 'small muted', text: 'Musterlösung' }), formulaBox(ex.solution), ex.explain ? el('p', { class: 'small', text: ex.explain }) : null,
@@ -1049,6 +1100,8 @@
     if (o.f) return formulaBox(o.f);
     return el('span', { text: o.t });
   }
+  const optKey = (i) => el('span', { class: 'opt-key', text: 'ABCDEFGH'[i] || String(i + 1) });
+  const markKey = (btn, ic) => { const k = btn.querySelector('.opt-key'); if (k) { k.textContent = ''; k.appendChild(icon(ic)); } };
   function viewWahl(ex, done) {
     const wrap = el('div', { class: 'ex ex-wahl' });
     const opts = ex.keepOrder ? ex.options.slice() : shuffle(ex.options);
@@ -1057,13 +1110,13 @@
     let outcome = null, mid = null;
     const gap = ex.text ? el('span', { class: 'gap' }, '…') : null;
     const list = el('div', { class: 'options' + (ex.text ? ' words' : '') });
-    opts.forEach((o) => {
-      const b = el('button', { class: 'option' + (o.d ? ' has-diagram' : '') }, optionNode(o));
+    opts.forEach((o, i) => {
+      const b = el('button', { class: 'option' + (o.d ? ' has-diagram' : '') }, optKey(i), el('span', { class: 'opt-body' }, optionNode(o)));
       b.addEventListener('click', () => {
         if (outcome) return;
         outcome = o.ok ? 'first' : 'wrong';
-        [...list.children].forEach((c, k) => { c.disabled = true; if (opts[k].ok) c.classList.add('correct'); });
-        if (!o.ok) { b.classList.add('wrong'); if (o.mid) { mid = o.mid; recordMistakes([o.mid], ex.id); } }
+        [...list.children].forEach((c, k) => { c.disabled = true; if (opts[k].ok) { c.classList.add('correct'); markKey(c, 'check'); } });
+        if (!o.ok) { b.classList.add('wrong'); markKey(b, 'close'); if (o.mid) { mid = o.mid; recordMistakes([o.mid], ex.id); } }
         if (gap) { gap.textContent = (opts.find((x) => x.ok) || {}).t || ''; gap.classList.add(o.ok ? 'ok' : 'shown'); }
         const r = { status: o.ok ? 'richtig' : 'falsch', title: o.ok ? 'Richtig' : 'Leider falsch', msgs: [], mids: o.ok ? [] : (o.mid ? [o.mid] : []) };
         if (o.why) r.msgs.push(o.why);
@@ -1090,13 +1143,14 @@
     const btnCheck = el('button', { class: 'btn primary', onclick: () => check() }, 'Prüfen');
     const btnNext = el('button', { class: 'btn primary', style: { display: 'none' }, onclick: () => done(outcome, []) }, 'Weiter');
     function check() {
+      if (outcome) return;
       const r = Checker.checkValue(expected, input.value);
       if (r.status === 'leer') { toast(r.msgs[0]); return; }
       attempts++;
       fbSlot.innerHTML = '';
       const ans = XL.formatValue(expected, ex.fmt);
       if (r.status === 'richtig') {
-        outcome = attempts === 1 ? 'first' : 'wrong';
+        outcome = attempts === 1 ? 'first' : 'fast';
         fbSlot.appendChild(feedbackBox({ status: 'richtig', title: 'Richtig', msgs: ['Excel zeigt: ' + ans].concat(ex.explain ? [ex.explain] : []) }));
       } else if (attempts < 2) {
         fbSlot.appendChild(feedbackBox({ status: 'falsch', title: 'Nicht ganz', msgs: (r.msgs || []).concat(['Rechne nochmal Schritt für Schritt.']) }));
@@ -1105,6 +1159,7 @@
         outcome = 'wrong';
         fbSlot.appendChild(feedbackBox({ status: 'falsch', title: 'Leider falsch', msgs: ['Excel zeigt: ' + ans].concat(ex.explain ? [ex.explain] : []) }));
       }
+      input.disabled = true;
       btnCheck.style.display = 'none';
       btnNext.style.display = '';
     }
@@ -1209,7 +1264,9 @@
     const info = el('span', { class: 'small muted' });
     const upd = () => { info.textContent = TextCheck.words(ta.value) + ' / ' + k.minWords + ' Wörter · ' + TextCheck.paragraphs(ta.value).length + ' Absätze'; };
     let tmr = null;
-    ta.addEventListener('input', () => { upd(); clearTimeout(tmr); tmr = setTimeout(() => { P.essays[k.id] = Object.assign({}, P.essays[k.id], { draft: ta.value }); saveP(); }, 600); });
+    const save = () => { clearTimeout(tmr); if (((P.essays[k.id] || {}).draft || '') !== ta.value) { P.essays[k.id] = Object.assign({}, P.essays[k.id], { draft: ta.value }); saveP(); } };
+    ta.addEventListener('input', () => { upd(); clearTimeout(tmr); tmr = setTimeout(save, 600); });
+    ta.addEventListener('blur', save);
     upd();
     screen({ title: k.title, back: '#/', color: s.color, cls: 'essay' },
       el('section', { class: 'card task-card', lang: 'en' }, el('div', { class: 'eyebrow', text: 'Aufgabe' }), el('b', { text: k.task })),
@@ -1217,6 +1274,7 @@
       el('div', { class: 'essay-bar' }, info, el('button', { class: 'btn small-btn', onclick: () => wordbankOverlay(s) }, 'Linking words')),
       ta,
       el('button', { class: 'btn primary block', style: { background: s.color }, onclick: () => submitEssay(k, s, ta.value) }, 'Fertig – prüfen'));
+    flushEssay = save;
   }
   function submitEssay(k, s, text) {
     if (TextCheck.words(text) < 40) { toast('Dein Text ist noch sehr kurz.'); return; }
@@ -1235,6 +1293,7 @@
     saveP();
     checkRewards();
     renderEssayResult(k, s, text, a, got);
+    if (got === 3) confetti(app.querySelector('.level-result'));
   }
   function renderEssayResult(k, s, text, a, got) {
     const L = pathOf(s);
@@ -1250,7 +1309,7 @@
       el('h2', { text: 'Prüfe selbst' }), el('section', { class: 'card' }, el('ul', { class: 'checklist self' }, (s.essaySelf || []).map((t) => el('li', null, el('label', null, el('input', { type: 'checkbox' }), el('span', { text: ' ' + t })))))),
       el('h2', { text: 'Dein Text' }), el('section', { class: 'card model-text', lang: 'en', html: toHtml(text) }),
       el('details', { class: 'card model-box' }, el('summary', null, 'Mustertext anzeigen'), el('div', { class: 'model-text', lang: 'en', html: toHtml(k.model) })),
-      next ? el('button', { class: 'btn primary block', style: { background: next.color }, onclick: () => startLevel(next) }, 'Weiter: Level ' + next.n) : null,
+      next ? el('button', { class: 'btn primary block', style: { background: next.color }, onclick: () => go('#/level/' + encodeURIComponent(next.id)) }, 'Weiter: ' + nextName(next)) : null,
       el('div', { class: 'row-links' }, el('button', { class: 'link-btn', onclick: () => viewEssay(k.id) }, 'Text überarbeiten'), el('button', { class: 'link-btn', onclick: () => go('#/') }, 'Zur Übersicht')));
   }
 
@@ -1356,7 +1415,7 @@
         if (t.diagram) card.appendChild(diagram(t.diagram, { small: true }));
         const list = el('div', { class: 'options' });
         t.options.forEach((o, j) => {
-          const b = el('button', { class: 'option' + (st.answers[key] === j ? ' picked' : '') }, optionNode(o));
+          const b = el('button', { class: 'option' + (st.answers[key] === j ? ' picked' : '') }, optKey(j), el('span', { class: 'opt-body' }, optionNode(o)));
           b.addEventListener('click', () => { st.answers[key] = j; [...list.children].forEach((c, q) => c.classList.toggle('picked', q === j)); });
           list.appendChild(b);
         });
@@ -1533,10 +1592,18 @@
     // für die automatischen Tests: Level-Weg und erzeugte Auswahl-Aufgaben prüfen
     window.LernappDebug = {
       report() {
-        return SUBJECTS.map((s) => ({ subject: s.id, levels: pathOf(s).map((l) => ({ id: l.id, kind: l.kind, n: l.kind === 'exam' ? 1 : levelItems(l).length })),
+        return SUBJECTS.map((s) => ({ subject: s.id, levels: pathOf(s).map((l) => ({ id: l.id, kind: l.kind, n: l.kind === 'exam' || l.kind === 'essay' ? 1 : levelItems(l).length })),
           choices: s.topics.flatMap((t) => t.exercises.filter((e) => e.type === 'formel' || e.type === 'luecke').map((e) => (e.type === 'formel'
             ? { id: e.id, d3: distractors(e, 2).map((x) => x.f), d4: distractors(e, 3).length } : { id: e.id, d3: (e.wrong || []).slice(0, 2).map((x) => x.t), d4: (e.wrong || []).slice(0, 3).length }))) }));
       },
+      // alle Aufgaben-IDs eines Fachs, auch die erzeugten Auswahl-Varianten
+      ids(sid) {
+        const s = subjectById(sid);
+        return s.topics.flatMap((t) => t.exercises.flatMap((e) => [e.id].concat((e.type === 'formel' || e.type === 'luecke') ? [3, 4].map((n) => asChoice(e, n)).filter(Boolean).map((x) => x.id) : [])));
+      },
+      play(ids) { startSession(ids.map(exById).filter(Boolean), 'Test', '#/', null); },
+      subject(sid) { P.cur = sid; saveP(); },
+      confetti() { confetti(app.querySelector('.level-result') || app.querySelector('main')); },
     };
     route();
   }
@@ -1558,7 +1625,14 @@
     viewLogin();
   }
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController) return;
+      updateReady = true;
+      if (COURSE && !location.hash.replace(/^#\/?/, '') && !document.querySelector('.menu-ov')) route();
+    });
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
+  document.addEventListener('visibilitychange', () => { if (document.hidden && flushEssay) flushEssay(); });
   boot();
 })();
