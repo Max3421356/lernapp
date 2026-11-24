@@ -120,7 +120,7 @@
         const isTarget = tgt && tgt.col === c && tgt.row === r;
         const inFill = fill && c >= fill.c1 && c <= fill.c2 && r >= fill.r1 && r <= fill.r2;
         let text;
-        if (shown.has(a)) { val = shown.get(a); text = XL.formatValue(val, fmt); cls.push('shown'); }
+        if (shown.has(a)) { val = shown.get(a); text = XL.formatValue(val, fmt); cls.push((opts.show && opts.show.cls) || 'shown'); }
         else if (isTarget && opts.showTarget !== 'value') { text = '?'; cls.push('target'); }
         else if (inFill && opts.showTarget !== 'value') { text = '…'; cls.push('fill'); }
         else text = XL.formatValue(val, fmt);
@@ -214,11 +214,20 @@
   function autoScroll(wrap, tries) {
     tries = tries || 0;
     if (!wrap.isConnected) { if (tries < 20) requestAnimationFrame(() => autoScroll(wrap, tries + 1)); return; }
-    const t = wrap.querySelector('td.target') || wrap.querySelector('td.shown') || wrap.querySelector('td.hl');
-    if (!t) return;
-    const wr = wrap.getBoundingClientRect(), tr = t.getBoundingClientRect();
-    if (tr.bottom > wr.bottom - 4 || tr.top < wr.top + 26) wrap.scrollTop += (tr.top - wr.top) - wr.height / 2 + tr.height / 2;
-    if (tr.right > wr.right - 4 || tr.left < wr.left + 30) wrap.scrollLeft += (tr.left - wr.left) - wr.width / 2 + tr.width / 2;
+    let cells = [...wrap.querySelectorAll('td.target, td.fill, td.shown, td.shown-bad, td.shown-warn')];
+    if (!cells.length) cells = [...wrap.querySelectorAll('td.hl')];
+    if (!cells.length) return;
+    // alle gesuchten Zellen zusammen sichtbar machen (wenn sie hineinpassen)
+    const rs = cells.map((c) => c.getBoundingClientRect());
+    const tr = { top: Math.min(...rs.map((r) => r.top)), bottom: Math.max(...rs.map((r) => r.bottom)), left: Math.min(...rs.map((r) => r.left)), right: Math.max(...rs.map((r) => r.right)) };
+    tr.height = tr.bottom - tr.top; tr.width = tr.right - tr.left;
+    const wr = wrap.getBoundingClientRect();
+    if (tr.bottom > wr.bottom - 4 || tr.top < wr.top + 26) {
+      wrap.scrollTop += tr.height < wr.height - 40 ? (tr.top - wr.top) - wr.height / 2 + tr.height / 2 + 10 : (tr.top - wr.top) - 30;
+    }
+    if (tr.right > wr.right - 4 || tr.left < wr.left + 30) {
+      wrap.scrollLeft += tr.width < wr.width - 40 ? (tr.left - wr.left) - wr.width / 2 + tr.width / 2 : (tr.left - wr.left) - 34;
+    }
   }
 
   // ---------- Struktogramm (Nassi-Shneiderman) ----------

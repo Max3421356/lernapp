@@ -411,7 +411,18 @@
     const lastMids = [];
     const wrap = el('div', { class: 'ex ex-formel' });
     const fi = formulaInput({ fns: FNS[ex._topic] || FNS.exam, onEnter: () => check() });
-    const grid = sheetGrid(ex.sheet, { target: ex.target, fill: ex.fill, onCell: (a) => fi.insertRef(a), maxHeight: '44vh' });
+    let grid = sheetGrid(ex.sheet, { target: ex.target, fill: ex.fill, onCell: (a) => fi.insertRef(a), maxHeight: '44vh' });
+    // zeigt, was die eingegebene Formel in der Tabelle ausrechnen würde (wie in Excel nach dem Herunterziehen)
+    function showResult(formula, status) {
+      const cls = status === 'richtig' ? 'shown' : status === 'fast' ? 'shown-warn' : 'shown-bad';
+      let f = String(formula || '').trim();
+      if (f && f[0] !== '=') f = '=' + f;
+      try {
+        const g = sheetGrid(ex.sheet, { show: { range: ex.fill || (ex.target + ':' + ex.target), formula: f, cls }, onCell: (a) => fi.insertRef(a), maxHeight: '44vh' });
+        grid.replaceWith(g);
+        grid = g;
+      } catch (e) { /* Formel nicht darstellbar */ }
+    }
     const fbSlot = el('div');
     const btnCheck = el('button', { class: 'btn primary', onclick: () => check() }, 'Prüfen');
     const btnSol = el('button', { class: 'btn ghost', onclick: () => showSolution(), style: { display: 'none' } }, 'Lösung zeigen');
@@ -429,6 +440,7 @@
       if (firstStatus === null) firstStatus = r.status;
       (r.mids || []).forEach((m) => lastMids.push(m));
       recordMistakes(r.mids, ex.id);
+      if (r.status !== 'syntax') showResult(fi.value(), r.status);
       fbSlot.innerHTML = '';
       fbSlot.appendChild(feedbackBox(r, ex));
       if (r.status === 'richtig') {
@@ -448,6 +460,7 @@
     }
     function showSolution() {
       shown = true;
+      showResult(ex.solution, 'richtig');
       fbSlot.innerHTML = '';
       fbSlot.appendChild(el('div', { class: 'solution' }, el('span', { class: 'small muted', text: 'Musterlösung' }), formulaBox(ex.solution), ex.explain ? el('p', { class: 'small', text: ex.explain }) : null,
         el('p', { class: 'small muted', text: 'Die Aufgabe kommt am Ende der Runde nochmal.' })));
@@ -673,7 +686,21 @@
         box.appendChild(list);
       } else {
         const fi = formulaInput({ fns: FNS.exam, value: st.answers[key] || '' });
-        fi.input.addEventListener('focus', () => { st.active = key; });
+        fi.box.classList.add('compact');
+        fi.input.addEventListener('focus', () => {
+          st.active = key;
+          // nur beim aktiven Feld die Zusatztasten zeigen
+          Object.values(inputs).forEach((x) => x.box.classList.add('compact'));
+          fi.box.classList.remove('compact');
+          // gesuchte Zelle in der Tabelle markieren und zeigen
+          grid.querySelectorAll('td.focus').forEach((td) => td.classList.remove('focus'));
+          const td = grid.querySelector('td[data-a="' + t.cell + '"]');
+          if (td) {
+            td.classList.add('focus');
+            const wr = grid.getBoundingClientRect(), tr = td.getBoundingClientRect();
+            grid.scrollTo({ left: grid.scrollLeft + (tr.left - wr.left) - wr.width / 2 + tr.width / 2, top: grid.scrollTop + (tr.top - wr.top) - wr.height / 2 + tr.height / 2, behavior: 'smooth' });
+          }
+        });
         fi.input.addEventListener('input', () => { st.answers[key] = fi.value(); });
         inputs[key] = fi;
         box.appendChild(fi.box);
