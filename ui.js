@@ -14,7 +14,13 @@
         else if (k === 'text') n.textContent = v;
         else if (k === 'html') n.innerHTML = v;
         else if (k.startsWith('on') && typeof v === 'function') n.addEventListener(k.slice(2), v);
-        else if (k === 'style' && typeof v === 'object') Object.assign(n.style, v);
+        else if (k === 'style' && typeof v === 'object') {
+          // eigene CSS-Variablen (--c) gehen nur über setProperty
+          for (const sk of Object.keys(v)) {
+            if (v[sk] === null || v[sk] === undefined) continue;
+            if (sk.startsWith('--')) n.style.setProperty(sk, v[sk]); else n.style[sk] = v[sk];
+          }
+        }
         else n.setAttribute(k, v === true ? '' : v);
       }
     }
@@ -36,7 +42,7 @@
     repeat: '<path d="M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3" /><path d="M18 3v4h-4M6 21v-4h4" />',
     exam: '<rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6M9 16h3" />',
     alert: '<path d="M12 3l9 16H3z" /><path d="M12 10v4M12 17v.5" />',
-    gear: '<circle cx="12" cy="12" r="3.2" /><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" />',
+    gear: '<circle cx="12" cy="12" r="3" /><path d="M10.3 3h3.4l.5 2.4 1.7 1 2.3-.8 1.7 2.9-1.8 1.6v2l1.8 1.6-1.7 2.9-2.3-.8-1.7 1-.5 2.4h-3.4l-.5-2.4-1.7-1-2.3.8-1.7-2.9 1.8-1.6v-2L3.8 8.5l1.7-2.9 2.3.8 1.7-1z" />',
     play: '<path d="M8 5v14l11-7z" />',
     check: '<path d="M5 12.5l4.5 4.5L19 7.5" />',
     cards: '<rect x="3" y="6" width="14" height="12" rx="2" /><path d="M7 3h12a2 2 0 0 1 2 2v10" />',
@@ -46,7 +52,13 @@
     clock: '<circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" />',
     star: '<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9 6.8 19.6l1-5.8L3.5 9.7l5.9-.9z" />',
     info: '<circle cx="12" cy="12" r="8.5" /><path d="M12 11v5M12 8v.5" />',
-    eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" /><circle cx="12" cy="12" r="2.8" />'
+    eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" /><circle cx="12" cy="12" r="2.8" />',
+    trophy: '<path d="M8 4h8v5a4 4 0 0 1-8 0z" /><path d="M8 6H5.5a2.5 2.5 0 0 0 2.6 3.6M16 6h2.5a2.5 2.5 0 0 1-2.6 3.6" /><path d="M12 13v3.5M8.5 20h7M10 16.5h4V20h-4z" />',
+    book: '<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5z" /><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19" /><path d="M9 7.5h6" />',
+    target: '<circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4.5" /><circle cx="12" cy="12" r="0.8" />',
+    medal: '<circle cx="12" cy="14.5" r="5.5" /><path d="M8.5 3.5l3.5 5.5 3.5-5.5" />',
+    chev: '<path d="M9 5.5l6.5 6.5L9 18.5" />',
+    grid: '<rect x="4" y="4" width="16" height="16" rx="2.5" /><path d="M4 10h16M10 4v16" />'
   };
   function icon(name, cls) {
     const span = el('span', { class: 'ic' + (cls ? ' ' + cls : ''), 'aria-hidden': 'true' });
@@ -317,18 +329,16 @@
       try { input.setSelectionRange(caret, caret); } catch (e) { /* ignorieren */ }
       input.dispatchEvent(new Event('input'));
     }
-    const keys = ['=', ';', '(', ')', '"', ':', '$', '<', '>', '*', '/', '+', '-', '&', '%', ','];
-    const keyRow = el('div', { class: 'keys' });
+    // zwei feste Reihen mit allen Zeichen (nichts versteckt), ⌫ oben rechts
+    const keys = ['=', ';', ':', '(', ')', '"', '$', '&', ',', '⌫', '<', '>', '<=', '>=', '<>', '+', '-', '*', '/', '%'];
+    const keyRow = el('div', { class: 'keys pad' });
     for (const k of keys) {
-      const b = el('button', { type: 'button', class: 'key' + (k === '$' ? ' key-dollar' : ''), text: k, title: k === '$' ? '$ setzen (wie F4)' : null });
+      const cls = 'key' + (k === '$' ? ' key-dollar' : k === '⌫' ? ' key-bs' : '') + (k.length > 1 && k !== '⌫' ? ' k2' : '');
+      const b = el('button', { type: 'button', class: cls, text: k, title: k === '$' ? '$ setzen (wie F4)' : null, 'aria-label': k === '⌫' ? 'Zeichen löschen' : null });
       b.addEventListener('pointerdown', (e) => e.preventDefault());
-      b.addEventListener('click', () => (k === '$' ? toggleDollar() : insert(k)));
+      b.addEventListener('click', () => (k === '$' ? toggleDollar() : k === '⌫' ? backspace() : insert(k)));
       keyRow.appendChild(b);
     }
-    const bs = el('button', { type: 'button', class: 'key key-bs', 'aria-label': 'Zeichen löschen', text: '⌫' });
-    bs.addEventListener('pointerdown', (e) => e.preventDefault());
-    bs.addEventListener('click', backspace);
-    keyRow.appendChild(bs);
     const fnRow = el('div', { class: 'keys fns' });
     for (const fn of opts.fns || []) {
       const label = fn;
@@ -341,6 +351,56 @@
     return { box, input, insertRef: (a) => insert(a, 0, true), focus: () => input.focus(), value: () => input.value, set: (v) => { input.value = v; caret = v.length; } };
   }
 
+  // ---------- Medaillen ----------
+  const MEDAL = {
+    gold: ['#FFE68C', '#F2C230', '#B8890E'], silver: ['#F4F6F9', '#C3CCD6', '#7F8B99'], bronze: ['#F5C894', '#D29455', '#94592A'],
+    locked: ['#F3F5F8', '#E2E6EC', '#C3CAD4'], blue: ['#A9CBF7', '#2F7DE1', '#1D55A3'], purple: ['#D2B9F4', '#8A4FD8', '#5E2EA6'],
+    orange: ['#FFCFA3', '#E8762B', '#A9501A'], green: ['#AEE3BE', '#2E9D4F', '#1B6B33'], red: ['#F7B7B1', '#DD4238', '#9C2A22']
+  };
+  let medalUid = 0;
+  // opts: {color, glyph (Icon-Name oder kurzer Text), size, locked}
+  function medal(opts) {
+    opts = opts || {};
+    const locked = !!opts.locked;
+    const c = MEDAL[locked ? 'locked' : opts.color] || MEDAL.gold;
+    const size = opts.size || 56;
+    const gid = 'mg' + (++medalUid);
+    const ink = locked ? '#AAB3C0' : '#fff';
+    let glyph = '';
+    if (opts.glyph && ICONS[opts.glyph]) {
+      glyph = `<g transform="translate(20 34)" fill="none" stroke="${ink}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[opts.glyph]}</g>`;
+    } else if (opts.glyph) {
+      const t = String(opts.glyph);
+      glyph = `<text x="32" y="${t.length > 2 ? 51 : 53}" text-anchor="middle" font-family="system-ui, sans-serif" font-size="${t.length > 2 ? 14 : 19}" font-weight="900" fill="${ink}">${t}</text>`;
+    }
+    const rib1 = locked ? '#D5DBE3' : '#3B6FD8', rib2 = locked ? '#C9D0D9' : '#D9473E';
+    const span = el('span', { class: 'medal' + (locked ? ' locked' : ''), style: { width: size + 'px', height: Math.round(size * 76 / 64) + 'px' }, 'aria-hidden': 'true' });
+    span.innerHTML = `<svg viewBox="0 0 64 76"><defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c[0]}"/><stop offset="1" stop-color="${c[1]}"/></linearGradient></defs>` +
+      `<path d="M18 2 L30 2 L37 26 L25 31 Z" fill="${rib1}"/><path d="M46 2 L34 2 L27 26 L39 31 Z" fill="${rib2}"/>` +
+      `<circle cx="32" cy="46" r="24" fill="url(#${gid})" stroke="${c[2]}" stroke-width="3"/><circle cx="32" cy="46" r="17.5" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="2"/>${glyph}</svg>`;
+    return span;
+  }
+  // kleiner Hinweis oben, wenn eine Medaille neu dazukommt (einer nach dem anderen)
+  const medalQueue = [];
+  let medalBusy = false;
+  function medalPopup(node, title, desc, eyebrow) {
+    medalQueue.push({ node, title, desc, eyebrow });
+    if (!medalBusy) nextMedal();
+  }
+  function nextMedal() {
+    const m = medalQueue.shift();
+    if (!m) { medalBusy = false; return; }
+    medalBusy = true;
+    const box = el('div', { class: 'medal-pop', role: 'status' }, m.node,
+      el('div', { class: 'mp-text' }, el('div', { class: 'mp-eyebrow', text: m.eyebrow || 'Neue Medaille' }), el('b', { text: m.title }), el('div', { class: 'small', text: m.desc })));
+    document.body.appendChild(box);
+    requestAnimationFrame(() => requestAnimationFrame(() => box.classList.add('show')));
+    let closed = false;
+    const close = () => { if (closed) return; closed = true; box.classList.remove('show'); setTimeout(() => { box.remove(); nextMedal(); }, 320); };
+    box.addEventListener('click', close);
+    setTimeout(close, 3800);
+  }
+
   function progressRing(pct, color, size) {
     size = size || 44;
     const r = (size - 6) / 2, c = 2 * Math.PI * r;
@@ -349,5 +409,5 @@
     return wrap;
   }
 
-  root.UI = { el, svgEl, icon, toast, formulaHtml, formulaBox, sheetGrid, diagram, formulaInput, progressRing };
+  root.UI = { el, svgEl, icon, toast, formulaHtml, formulaBox, sheetGrid, diagram, formulaInput, progressRing, medal, medalPopup };
 })(window);
