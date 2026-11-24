@@ -362,3 +362,54 @@ details.mistake.mine summary { color: #B02A20; }
 /* ---------- Hinweis-Toast ---------- */
 #toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 90px); transform: translate(-50%, 20px); background: #1B2430; color: #fff; padding: 10px 16px; border-radius: 12px; font-size: 14px; opacity: 0; transition: .25s; z-index: 200; pointer-events: none; max-width: 90vw; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- Englisch: Lücke, Schreiben, Mustertext, Linking words ---------- */
+.gap-card { margin-top: 8px; }
+.gap-text { font-size: 19px; line-height: 1.6; margin: 0; }
+.gap { display: inline-block; min-width: 70px; padding: 0 8px; margin: 0 2px; border-bottom: 3px solid var(--blue); color: var(--blue); font-weight: 700; text-align: center; }
+.gap.ok { border-color: var(--green); color: var(--green); background: #E8F7EE; border-radius: 6px 6px 0 0; }
+.gap.shown { border-color: var(--orange); color: #9A4A0F; background: #FFF3E6; border-radius: 6px 6px 0 0; }
+.gap-input { font-size: 18px; }
+.options.words .option { font-weight: 600; font-size: 17px; }
+.task-card { border-left: 5px solid var(--blue); font-size: 17px; }
+.w-input { width: 100%; min-height: 130px; font: 400 17px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 12px; border: 2px solid #C5CFDD; border-radius: 14px; background: #fff; color: var(--text); resize: vertical; margin-top: 10px; }
+.w-input:focus { outline: none; border-color: var(--blue); }
+.essay-input { min-height: 46vh; }
+.w-count { text-align: right; margin-top: 4px; }
+.essay-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
+.checklist { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.checklist li { display: flex; align-items: flex-start; gap: 10px; font-size: 15px; line-height: 1.35; }
+.checklist .ck { flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; color: #fff; background: var(--green); }
+.checklist li.bad .ck { background: #E0453A; }
+.checklist .ck .ic { width: 15px; height: 15px; }
+.checklist small { color: var(--muted); }
+.checklist.self li label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.checklist.self input { width: 20px; height: 20px; margin: 1px 0 0; flex: none; }
+.model { font-size: 16px; line-height: 1.55; margin: 6px 0 0; }
+.model-text { font-size: 16px; line-height: 1.6; }
+.model-text .seg { color: #8A93A3; transition: color .2s; }
+.model-text .seg.on { color: var(--text); background: color-mix(in srgb, var(--c, #FFE14D) 18%, transparent); box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--c, #FFE14D) 60%, transparent); border-radius: 4px; }
+.model-text.blocks p { margin: 0 0 10px; padding: 6px 8px; border-radius: 10px; }
+.model-text mark { background: #FFF1A8; color: inherit; border-radius: 4px; padding: 0 2px; }
+details.model-box summary { cursor: pointer; font-weight: 700; color: var(--blue); list-style: none; }
+details.model-box summary::-webkit-details-marker { display: none; }
+details.model-box[open] summary { margin-bottom: 10px; }
+.m-txt { font-size: 14.5px; }
+.order-answer.long { flex-direction: column; align-items: stretch; font-family: inherit; }
+.order-answer.long .order-fix:empty { display: none; }
+.order-answer.long .chip-btn, .order-pool.long .chip-btn { text-align: left; font-weight: 600; line-height: 1.35; padding: 10px 12px; }
+.order-answer.long .slot { width: 100%; height: 42px; }
+.order-pool.long { flex-direction: column; align-items: stretch; }
+.wb-group { padding: 14px 16px; }
+.wb-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.wb-head b { font-size: 16px; }
+.wb-row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid #EEF1F5; }
+.wb-row:last-child { border-bottom: 0; }
+.wb-en { font-weight: 700; color: #1E5BB8; }
+.wb-de { color: var(--muted); text-align: right; font-size: 14px; }
+.wb-sheet { max-height: 82vh; overflow-y: auto; }
+.wb-sheet .card { box-shadow: none; border: 1px solid var(--line); }
+.menu-title { font-weight: 800; font-size: 17px; padding: 2px 12px 8px; }
+.menu-dot { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+.pt-switch { border: 0; background: none; font: inherit; color: inherit; cursor: pointer; padding: 0; }
+.pt-caret { color: var(--muted); font-size: 14px; }

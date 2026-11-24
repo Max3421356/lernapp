@@ -53,7 +53,7 @@
   const addDays = (s, n) => { const d = new Date(s + 'T12:00:00'); d.setDate(d.getDate() + n); return iso(d); };
   const STATS0 = () => ({ answered: 0, correct: 0, fixed: 0, combo: 0, bestCombo: 0, examsDone: 0, bestExamPct: 0 });
   const defaults = () => ({ items: {}, mistakes: {}, seen: {}, exams: {}, settings: { goal: 10 }, subjects: null, cur: null,
-    daily: {}, goalDays: {}, stats: STATS0(), medals: {}, best: 0, vseen: {}, levels: {} });
+    daily: {}, goalDays: {}, stats: STATS0(), medals: {}, best: 0, vseen: {}, levels: {}, essays: {} });
   let P = loadP();
   function loadP() {
     try {
@@ -62,6 +62,7 @@
       p.settings = Object.assign({ goal: 10 }, raw.settings || {});
       p.stats = Object.assign(STATS0(), raw.stats || {});
       p.levels = p.levels || {};
+      p.essays = p.essays || {};
       return p;
     } catch (e) { return defaults(); }
   }
@@ -86,6 +87,7 @@
     type: { name: 'Selber tippen', icon: 'pencil', hint: 'Formeln selbst eintippen' },
     review: { name: 'Wiederholung', icon: 'repeat', hint: 'Alles bisher gemischt' },
     exam: { name: 'Probeklausur', icon: 'trophy', hint: 'Wie in der Klausur, mit Zeit' },
+    essay: { name: 'Probe-Text', icon: 'book', hint: 'Einen ganzen Text schreiben' },
   };
   function pathOf(s) {
     if (s._path) return s._path;
@@ -95,7 +97,8 @@
       if (i % 2 === 1 || i === s.topics.length - 1) L.push({ id: s.id + ':mix' + (i + 1), kind: 'review', upto: i, title: 'Wiederholung', color: '#5B6B8C' });
     });
     (s.exams || []).forEach((k) => L.push({ id: 'exam:' + k.id, kind: 'exam', exam: k.id, title: k.title, color: '#1F2A44' }));
-    L.forEach((l, i) => { l.n = i + 1; l.subject = s.id; l.i = i; });
+    (s.essays || []).forEach((k) => L.push({ id: 'essay:' + k.id, kind: 'essay', essay: k.id, title: k.title, color: '#1F2A44' }));
+    L.forEach((l, i) => { l.n = i + 1; l.subject = s.id; l.i = i; l.name = (s.levelNames || {})[l.kind] || KIND[l.kind].name; });
     return (s._path = L);
   }
   const levelById = (id) => { for (const s of SUBJECTS) { const l = pathOf(s).find((x) => x.id === id); if (l) return l; } return null; };
@@ -167,6 +170,13 @@
   function asChoice(ex, n) {
     const id = ex.id + '~w' + n;
     if (CHOICE.has(id)) return CHOICE.get(id);
+    if (ex.type === 'luecke') {
+      const w = (ex.wrong || []).slice(0, n - 1);
+      const it = w.length < 2 ? null : { id, type: 'wahl', _topic: ex._topic, prompt: ex.prompt, text: ex.text, explain: ex.explain,
+        options: [{ t: ex.answers[0], ok: true }].concat(w.map((x) => ({ t: x.t, ok: false, mid: x.mid, why: x.why }))) };
+      CHOICE.set(id, it);
+      return it;
+    }
     const d = distractors(ex, n - 1);
     const item = d.length < 2 ? null : {
       id, type: 'wahl', choose: true, _topic: ex._topic, prompt: ex.prompt, sheet: ex.sheet, target: ex.target, fill: ex.fill, diagram: ex.diagram, explain: ex.explain,
@@ -180,7 +190,7 @@
     if (l.kind === 'review') {
       const s = subjectById(l.subject);
       const t0 = today();
-      const pool = s.topics.slice(0, l.upto + 1).flatMap((t) => t.exercises.filter((e) => e.type === 'formel'));
+      const pool = s.topics.slice(0, l.upto + 1).flatMap((t) => t.exercises.filter((e) => e.type === 'formel' || e.type === 'luecke'));
       // fällige und unsichere zuerst, Klausurthemen etwas häufiger
       const w = pool.map((e) => { const it = P.items[e.id]; const due = it && it.due <= t0; return { e, k: Math.random() * (topicById(e._topic).focus ? 1.5 : 1) * (due ? 3 : 1) * (6 - box(e.id)) }; });
       w.sort((a, b) => b.k - a.k);
@@ -190,7 +200,8 @@
     }
     const t = topicById(l.topic);
     const ex = t.exercises;
-    const formel = ex.filter((e) => e.type === 'formel');
+    const formel = ex.filter((e) => e.type === 'formel' || e.type === 'luecke');
+    const writing = ex.filter((e) => e.type === 'schreiben');
     const wahl = ex.filter((e) => e.type === 'wahl');
     const other = ex.filter((e) => ['ergebnis', 'ordnen', 'karte'].includes(e.type));
     const nW = Math.min(3, wahl.length);
@@ -207,7 +218,7 @@
     }
     // selber tippen: die unsichersten zuerst
     const order = formel.map((e, i) => ({ e, i })).sort((a, b) => box(a.e.id) - box(b.e.id) || a.i - b.i).map((x) => x.e);
-    return order.slice(0, 5);
+    return order.slice(0, writing.length ? 4 : 5).concat(writing.slice(0, 1));
   }
 
   // =====================================================================
@@ -238,6 +249,7 @@
     { id: 'exam', name: 'Probeklausur', desc: 'Erste Probeklausur', color: 'green', glyph: 'exam', test: () => P.stats.examsDone >= 1 },
     { id: 'exam2', name: 'Note 2', desc: 'Probeklausur ab 81 %', color: 'silver', glyph: '2', test: () => P.stats.bestExamPct >= 81 },
     { id: 'exam1', name: 'Volltreffer', desc: 'Probeklausur mit 100 %', color: 'gold', glyph: '1', test: () => P.stats.bestExamPct >= 100 },
+    { id: 'essay', name: 'Autor', desc: 'Ersten Probe-Text geschrieben', color: 'purple', glyph: 'book', test: () => Object.values(P.essays || {}).some((x) => x.best) },
   ];
   let goalJustReached = false;
   // wird nach jeder beantworteten Aufgabe aufgerufen
@@ -387,6 +399,8 @@
       if (c === 'klausur') return viewExams(s);
       if (c === 'fehler') return viewMistakes(s);
       if (c === 'videos') return viewVideos(s);
+      if (c === 'woerter') return viewWordbank(s);
+      if (c === 'aufsaetze') return viewEssays(s);
       return viewThemen(s);
     }
     if (a === 'themen') return viewThemen(curSubject());
@@ -402,6 +416,7 @@
     if (a === 'erfolge') return viewRewards();
     if (a === 'faecher') return viewPicker();
     if (a === 'klausur' && b) return viewExamStart(b);
+    if (a === 'aufsatz' && b) return viewEssay(b);
     if (a === 'einstellungen') return viewSettings();
     if (a === 'session') return session ? renderSession() : viewPath();
     return viewPath();
@@ -418,12 +433,27 @@
     const sheet = el('div', { class: 'menu-sheet', role: 'dialog', 'aria-label': 'Menü' },
       el('div', { class: 'menu-grab' }),
       row('list', 'Themen-Übersicht', '#/themen'),
-      row('play', 'Alle Videos', '#/f/' + s.id + '/videos'),
-      row('exam', 'Probeklausur', '#/f/' + s.id + '/klausur'),
+      playlistOf(s).length ? row('play', 'Alle Videos', '#/f/' + s.id + '/videos') : null,
+      s.wordbank ? row('book', 'Linking words', '#/f/' + s.id + '/woerter') : null,
+      (s.exams || []).length ? row('exam', 'Probeklausur', '#/f/' + s.id + '/klausur') : null,
+      (s.essays || []).length ? row('pencil', ((s.levelNames || {}).essay || 'Probe-Text') + ' schreiben', '#/f/' + s.id + '/aufsaetze') : null,
       row('alert', 'Häufige Fehler', '#/f/' + s.id + '/fehler'),
       row('trophy', 'Erfolge', '#/erfolge'),
       others.map((x) => el('button', { class: 'menu-row', onclick: () => { P.cur = x.id; saveP(); closeMenu(); go('#/'); } }, icon('grid'), el('span', { text: 'Fach wechseln: ' + x.name }), icon('chev', 'chev'))),
       row('gear', 'Einstellungen', '#/einstellungen'));
+    menuEl = el('div', { class: 'menu-ov', onclick: (e) => { if (e.target === menuEl) closeMenu(); } }, sheet);
+    document.body.appendChild(menuEl);
+    requestAnimationFrame(() => menuEl && menuEl.classList.add('show'));
+  }
+
+  function openSubjects() {
+    closeMenu();
+    const s = curSubject();
+    const sheet = el('div', { class: 'menu-sheet', role: 'dialog', 'aria-label': 'Fach wählen' }, el('div', { class: 'menu-grab' }),
+      el('div', { class: 'menu-title', text: 'Fach wählen' }),
+      mySubjects().map((x) => el('button', { class: 'menu-row', onclick: () => { P.cur = x.id; saveP(); closeMenu(); go('#/'); } },
+        el('span', { class: 'menu-dot', style: { background: x.color } }), el('span', null, el('b', { text: x.name }), el('small', { class: 'muted', text: ' · ' + x.sub })),
+        x.id === s.id ? icon('check') : icon('chev', 'chev'))));
     menuEl = el('div', { class: 'menu-ov', onclick: (e) => { if (e.target === menuEl) closeMenu(); } }, sheet);
     document.body.appendChild(menuEl);
     requestAnimationFrame(() => menuEl && menuEl.classList.add('show'));
@@ -440,7 +470,8 @@
     const g = goal(), c = Math.min(countOn(today()), g);
     const bar = el('div', { class: 'path-top' },
       el('a', { class: 'pt-streak' + (st ? ' on' : ''), href: '#/erfolge', 'aria-label': st + ' Tage in Folge' }, icon('flame'), el('b', { text: String(st) })),
-      el('div', { class: 'pt-title' }, el('b', { text: s.name }), el('span', { class: 'pt-goal' }, el('i', { style: { width: Math.round(100 * c / g) + '%' } })),
+      el(mySubjects().length > 1 ? 'button' : 'div', { class: 'pt-title' + (mySubjects().length > 1 ? ' pt-switch' : ''), onclick: mySubjects().length > 1 ? openSubjects : null, 'aria-label': 'Fach wechseln' },
+        el('b', null, s.name, mySubjects().length > 1 ? el('span', { class: 'pt-caret', text: ' ▾' }) : null), el('span', { class: 'pt-goal' }, el('i', { style: { width: Math.round(100 * c / g) + '%' } })),
         el('span', { class: 'pt-goal-txt', text: c >= g ? 'Tagesziel geschafft' : 'Heute ' + c + ' von ' + g })),
       el('button', { class: 'icon-btn', 'aria-label': 'Menü', onclick: openMenu }, icon('menu')));
     const path = el('div', { class: 'path' });
@@ -452,25 +483,26 @@
         const t = l.topic ? topicById(l.topic) : null;
         if (t) path.appendChild(el('div', { class: 'path-head', style: { '--c': l.color } }, el('b', { text: t.title }), t.focus ? el('span', { class: 'ph-chip', text: 'Klausur' }) : null));
         else if (l.kind === 'exam') path.appendChild(el('div', { class: 'path-head', style: { '--c': l.color } }, el('b', { text: 'Probeklausuren' })));
+        else if (l.kind === 'essay') path.appendChild(el('div', { class: 'path-head', style: { '--c': l.color } }, el('b', { text: l.name + 's' })));
       }
       const done = levelDone(l), isCur = i === cur, locked = !done && i > cur;
       const x = Math.round(Math.sin(i * 1.15) * 62);
       const node = el('button', {
         class: 'lvl' + (done ? ' done' : '') + (isCur ? ' cur' : '') + (locked ? ' locked' : ''), style: { '--c': l.color, '--x': x + 'px' },
-        'aria-label': 'Level ' + l.n + ': ' + (l.topic ? l.title + ' – ' : '') + KIND[l.kind].name + (locked ? ' (gesperrt)' : ''),
+        'aria-label': 'Level ' + l.n + ': ' + (l.topic ? l.title + ' – ' : '') + l.name + (locked ? ' (gesperrt)' : ''),
         onclick: () => (locked ? toast('Erst Level ' + (cur + 1) + ' schaffen.') : go('#/level/' + encodeURIComponent(l.id))),
       },
-      isCur ? el('span', { class: 'lvl-bubble' }, el('b', { text: 'Level ' + l.n }), el('span', { text: KIND[l.kind].name })) : null,
+      isCur ? el('span', { class: 'lvl-bubble' }, el('b', { text: 'Level ' + l.n }), el('span', { text: l.name })) : null,
       el('span', { class: 'lvl-dot' }, icon(locked ? 'lock' : KIND[l.kind].icon)),
-      done ? stars(P.levels[l.id].stars, 18) : isCur ? null : el('span', { class: 'lvl-n', text: KIND[l.kind].name }));
+      done ? stars(P.levels[l.id].stars, 18) : isCur ? null : el('span', { class: 'lvl-n', text: l.name }));
       path.appendChild(node);
     });
     const L0 = L[cur];
     const allDone = L.every(levelDone);
-    const label = allDone ? 'Alles geschafft – nochmal üben' : (levelsDone() ? 'Weiter: Level ' : 'Los geht’s: Level ') + L0.n;
+    const label = allDone ? 'Alles geschafft – nochmal üben' : (L.some(levelDone) ? 'Weiter: Level ' : 'Los geht’s: Level ') + L0.n;
     const startBar = el('div', { class: 'start-bar' },
       el('button', { class: 'btn primary block start-btn', style: { background: L0.color }, onclick: () => go('#/level/' + encodeURIComponent(L0.id)) },
-        el('span', null, el('b', { text: label }), el('small', { text: (L0.topic ? L0.title + ' · ' : '') + KIND[L0.kind].name }))));
+        el('span', null, el('b', { text: label }), el('small', { text: (L0.topic ? L0.title + ' · ' : '') + L0.name }))));
     screen({ title: null, cls: 'path-page' }, bar, path, startBar);
     requestAnimationFrame(() => { const n = app.querySelector('.lvl.cur'); if (n) n.scrollIntoView({ block: 'center' }); });
   }
@@ -479,6 +511,7 @@
   function startLevel(l, opts) {
     opts = opts || {};
     if (l.kind === 'exam') { go('#/klausur/' + l.exam); return; }
+    if (l.kind === 'essay') { go('#/aufsatz/' + l.essay); return; }
     const t = l.topic ? topicById(l.topic) : null;
     if (!opts.skipIntro && l.kind === 'choose' && t && hasVideo(t) && !(P.seen[t.id] || {}).video && !(P.seen[t.id] || {}).intro) return viewLevelIntro(l);
     const items = levelItems(l);
@@ -536,7 +569,7 @@
         const done = levelDone(l), locked = !done && l.i > cur && k > 0 && !levelDone(ts.levels[k - 1]);
         return el('button', { class: 'tl-chip' + (locked ? ' locked' : ''), style: { '--c': colorOf(t) },
           onclick: () => (locked ? toast('Erst Level ' + ts.levels[k - 1].n + ' schaffen.') : go('#/level/' + encodeURIComponent(l.id))) },
-        el('span', { class: 'small', text: 'Level ' + l.n }), el('b', { text: KIND[l.kind].name }), done ? stars(P.levels[l.id].stars, 14) : icon(locked ? 'lock' : KIND[l.kind].icon));
+        el('span', { class: 'small', text: 'Level ' + l.n }), el('b', { text: l.name }), done ? stars(P.levels[l.id].stars, 14) : icon(locked ? 'lock' : KIND[l.kind].icon));
       })));
     const btn = (ic, label, sub, onclick, done) => el('button', { class: 'action', style: { '--c': colorOf(t) }, onclick },
       el('span', { class: 'act-ic' }, icon(ic)), el('span', { class: 'act-text' }, el('b', { text: label }), el('span', { class: 'small', text: sub })),
@@ -635,6 +668,7 @@
   }
   function viewExample(t) {
     const ex = t.example;
+    if (ex.segments) return viewTextExample(t);
     let i = 0;
     const main = screen({ title: 'Beispiel', sub: ex.title, back: '#/t/' + t.id, color: colorOf(t) });
     function draw() {
@@ -655,11 +689,34 @@
     draw();
   }
 
+  // Mustertext Schritt für Schritt: der gerade erklärte Teil ist markiert
+  function viewTextExample(t) {
+    const ex = t.example;
+    let i = 0;
+    const main = screen({ title: 'Beispiel', sub: ex.title, back: '#/t/' + t.id, color: colorOf(t) });
+    function draw() {
+      main.innerHTML = '';
+      const st = ex.steps[i];
+      const block = ex.segments.some((x) => x.length > 120);
+      const text = el('section', { class: 'card model-text' + (block ? ' blocks' : ''), lang: 'en', style: { '--c': colorOf(t) } },
+        ex.segments.map((seg, k) => el(block ? 'p' : 'span', { class: 'seg' + (st.hl.includes(k) ? ' on' : ''), text: seg + (block ? '' : ' ') })));
+      const card = el('section', { class: 'card step-card' }, el('div', { class: 'eyebrow', text: 'Schritt ' + (i + 1) + ' / ' + ex.steps.length }), el('p', { text: st.text }));
+      const nav = el('div', { class: 'row-btns sticky-nav' },
+        el('button', { class: 'btn ghost', disabled: i === 0, onclick: () => { i--; draw(); } }, 'Zurück'),
+        i < ex.steps.length - 1
+          ? el('button', { class: 'btn primary', style: { background: colorOf(t) }, onclick: () => { i++; draw(); } }, 'Weiter')
+          : el('button', { class: 'btn primary', style: { background: colorOf(t) }, onclick: () => { markSeen(t.id, 'example'); go('#/t/' + t.id); } }, 'Fertig'));
+      put(main, card, text, nav);
+    }
+    draw();
+  }
+
   // ---------- Häufige Fehler ----------
   function mistakeCard(m, count, open) {
+    const val = (txt) => (m.lang === 'en' ? el('span', { class: 'm-txt', lang: 'en', text: txt }) : el('code', { text: txt }));
     const body = el('div', { class: 'm-body' },
-      el('div', { class: 'm-line bad' }, el('span', { class: 'm-tag', text: 'Falsch' }), el('code', { text: m.falsch })),
-      el('div', { class: 'm-line good' }, el('span', { class: 'm-tag', text: 'Richtig' }), el('code', { text: m.richtig })),
+      el('div', { class: 'm-line bad' }, el('span', { class: 'm-tag', text: 'Falsch' }), val(m.falsch)),
+      el('div', { class: 'm-line good' }, el('span', { class: 'm-tag', text: 'Richtig' }), val(m.richtig)),
       el('p', null, el('b', { text: 'Warum: ' }), m.warum),
       el('p', { class: 'tipp' }, el('b', { text: 'Tipp: ' }), m.tipp));
     const det = el('details', { class: 'card mistake' + (count ? ' mine' : '') }, el('summary', null, el('span', { text: m.title }), count ? el('i', { class: 'count', text: count + '×' }) : null), body);
@@ -718,7 +775,7 @@
     const l = s.level;
     const col = l ? l.color : t ? colorOf(t) : '#2F7DE1';
     const prog = el('div', { class: 'progress' }, el('i', { style: { width: Math.round(100 * s.idx / s.items.length) + '%', background: col } }));
-    const sub = l ? (l.topic ? l.title + ' · ' : '') + KIND[l.kind].name : (s.idx + 1) + ' / ' + s.items.length;
+    const sub = l ? (l.topic ? l.title + ' · ' : '') + l.name : (s.idx + 1) + ' / ' + s.items.length;
     const main = screen({ title: s.title, sub, back: s.back, color: col, cls: 'session' });
     main.appendChild(prog);
     const done = (outcome, mids) => {
@@ -779,7 +836,7 @@
     const title = got === 3 ? 'Perfekt!' : got === 2 ? 'Gut gemacht!' : 'Geschafft!';
     const parts = [
       el('section', { class: 'card level-result', style: { '--c': l.color } },
-        el('div', { class: 'eyebrow', text: 'Level ' + l.n + ' · ' + KIND[l.kind].name }),
+        el('div', { class: 'eyebrow', text: 'Level ' + l.n + ' · ' + l.name }),
         stars(got, 54),
         el('div', { class: 'big', text: title }),
         el('div', { class: 'muted', text: ok + ' von ' + n + ' beim ersten Versuch richtig' }),
@@ -808,8 +865,103 @@
       case 'ergebnis': return viewErgebnis(ex, done);
       case 'ordnen': return viewOrdnen(ex, done);
       case 'karte': return viewKarte(ex, done);
+      case 'luecke': return viewLuecke(ex, done);
+      case 'schreiben': return viewSchreiben(ex, done);
     }
     return el('p', { text: 'Unbekannter Aufgabentyp.' });
+  }
+  // ---------- Lückentext: das fehlende Wort eintippen ----------
+  const normA = (x) => String(x || '').toLowerCase().replace(/[’`´]/g, "'").replace(/[.,!?;:"“”„]/g, ' ').replace(/\s+/g, ' ').trim();
+  function gapSentence(text, gapNode) {
+    const [a, b] = String(text).split('___');
+    return el('p', { class: 'gap-text', lang: 'en' }, a, gapNode, b || '');
+  }
+  function viewLuecke(ex, done) {
+    let attempts = 0, outcome = null;
+    const mids = [];
+    const wrap = el('div', { class: 'ex ex-luecke' });
+    const gap = el('span', { class: 'gap' }, '…');
+    const input = el('input', { type: 'text', class: 'v-input gap-input', placeholder: 'Wort eintippen', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'done', lang: 'en' });
+    input.addEventListener('input', () => { gap.textContent = input.value.trim() || '…'; });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (!outcome) check(); } });
+    const fbSlot = el('div');
+    const btnCheck = el('button', { class: 'btn primary', onclick: () => check() }, 'Prüfen');
+    const btnNext = el('button', { class: 'btn primary', style: { display: 'none' }, onclick: () => done(outcome, mids) }, 'Weiter');
+    const also = () => (ex.answers.length > 1 ? ' – auch möglich: ' + ex.answers.slice(1).join(', ') : '');
+    function check() {
+      const v = normA(input.value);
+      if (!v) { toast('Bitte zuerst etwas eintippen.'); return; }
+      attempts++;
+      const ok = ex.answers.some((a) => normA(a) === v);
+      const known = (ex.wrong || []).find((w) => normA(w.t) === v);
+      const kmid = known && known.mid ? [known.mid] : [];
+      fbSlot.innerHTML = '';
+      if (ok) {
+        outcome = attempts === 1 ? 'first' : 'fast';
+        gap.classList.add('ok');
+        fbSlot.appendChild(feedbackBox({ status: 'richtig', title: 'Richtig', msgs: [ex.answers[0] + also()].concat(ex.explain ? [ex.explain] : []) }));
+      } else {
+        if (kmid.length) { mids.push(kmid[0]); recordMistakes(kmid, ex.id); }
+        if (attempts < 2) {
+          fbSlot.appendChild(feedbackBox({ status: 'falsch', title: 'Noch nicht richtig', msgs: [known && known.why ? known.why : 'Probier es noch einmal.'], mids: kmid }));
+          input.select();
+          return;
+        }
+        outcome = 'wrong';
+        gap.textContent = ex.answers[0];
+        gap.classList.add('shown');
+        fbSlot.appendChild(feedbackBox({ status: 'falsch', title: 'Leider falsch', msgs: ['Richtig: ' + ex.answers[0] + also()].concat(known && known.why ? [known.why] : []).concat(ex.explain ? [ex.explain] : []), mids: kmid }));
+      }
+      input.disabled = true;
+      btnCheck.style.display = 'none';
+      btnNext.style.display = '';
+      fbSlot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+    put(wrap, el('div', { class: 'eyebrow ex-kind', text: 'Tippe das fehlende Wort ein' }), el('p', { class: 'prompt', text: ex.prompt }),
+      el('section', { class: 'card gap-card' }, gapSentence(ex.text, gap)), input, fbSlot, el('div', { class: 'row-btns' }, btnCheck, btnNext));
+    return wrap;
+  }
+  // ---------- selbst schreiben: automatische Prüfpunkte, dann ein Mustertext ----------
+  function checklistEl(res) {
+    return el('ul', { class: 'checklist' }, res.map((r) => el('li', { class: r.ok ? 'ok' : 'bad' }, el('span', { class: 'ck' }, icon(r.ok ? 'check' : 'close')),
+      el('span', null, el('b', { text: r.label }), r.hint ? el('small', { text: ' · ' + r.hint }) : null))));
+  }
+  function viewSchreiben(ex, done) {
+    let attempts = 0, outcome = null;
+    const sub = subjectById(topicById(ex._topic)._subject);
+    const wrap = el('div', { class: 'ex ex-schreiben' });
+    const ta = el('textarea', { class: 'w-input', rows: 5, placeholder: 'Schreibe hier auf Englisch …', lang: 'en', spellcheck: 'true', autocapitalize: 'sentences' });
+    const wc = el('div', { class: 'small muted w-count' });
+    const upd = () => { wc.textContent = TextCheck.words(ta.value) + ' Wörter'; };
+    ta.addEventListener('input', upd);
+    upd();
+    const fbSlot = el('div');
+    const btnCheck = el('button', { class: 'btn primary', onclick: () => check() }, 'Prüfen');
+    const btnSol = el('button', { class: 'btn ghost', style: { display: 'none' }, onclick: () => finish(false) }, 'Mustertext');
+    const btnNext = el('button', { class: 'btn primary', style: { display: 'none' }, onclick: () => done(outcome, []) }, 'Weiter');
+    function finish(allOk) {
+      outcome = allOk ? (attempts === 1 ? 'first' : 'fast') : 'shown';
+      fbSlot.appendChild(el('div', { class: 'solution' }, el('span', { class: 'small muted', text: 'So könnte es aussehen' }), el('p', { class: 'model', lang: 'en', text: ex.model }),
+        ex.explain ? el('p', { class: 'small', text: ex.explain }) : null));
+      btnCheck.style.display = 'none';
+      btnSol.style.display = 'none';
+      btnNext.style.display = '';
+      ta.readOnly = true;
+    }
+    function check() {
+      if (TextCheck.words(ta.value) < 3) { toast('Schreib zuerst ein paar Wörter.'); return; }
+      attempts++;
+      const res = TextCheck.runChecks(ta.value, ex.checks, sub.wordbank);
+      const allOk = res.every((r) => r.ok);
+      fbSlot.innerHTML = '';
+      fbSlot.appendChild(el('div', { class: 'feedback ' + (allOk ? 'ok' : 'warn') }, el('b', { class: 'fb-title', text: allOk ? 'Alle Punkte erfüllt' : 'Fast – schau dir die roten Punkte an' }), checklistEl(res)));
+      if (allOk) finish(true);
+      else { btnCheck.textContent = 'Nochmal prüfen'; btnSol.style.display = ''; }
+      fbSlot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+    put(wrap, el('div', { class: 'eyebrow ex-kind', text: 'Schreibe selbst (auf Englisch)' }), el('p', { class: 'prompt', text: ex.prompt }),
+      el('section', { class: 'card task-card', lang: 'en' }, el('b', { text: ex.task })), ta, wc, fbSlot, el('div', { class: 'row-btns' }, btnSol, btnCheck, btnNext));
+    return wrap;
   }
   function feedbackBox(r) {
     const cls = r.status === 'richtig' ? 'ok' : r.status === 'fast' ? 'warn' : 'bad';
@@ -903,7 +1055,8 @@
     const fbSlot = el('div');
     const btnNext = el('button', { class: 'btn primary', style: { display: 'none' } }, 'Weiter');
     let outcome = null, mid = null;
-    const list = el('div', { class: 'options' });
+    const gap = ex.text ? el('span', { class: 'gap' }, '…') : null;
+    const list = el('div', { class: 'options' + (ex.text ? ' words' : '') });
     opts.forEach((o) => {
       const b = el('button', { class: 'option' + (o.d ? ' has-diagram' : '') }, optionNode(o));
       b.addEventListener('click', () => {
@@ -911,6 +1064,7 @@
         outcome = o.ok ? 'first' : 'wrong';
         [...list.children].forEach((c, k) => { c.disabled = true; if (opts[k].ok) c.classList.add('correct'); });
         if (!o.ok) { b.classList.add('wrong'); if (o.mid) { mid = o.mid; recordMistakes([o.mid], ex.id); } }
+        if (gap) { gap.textContent = (opts.find((x) => x.ok) || {}).t || ''; gap.classList.add(o.ok ? 'ok' : 'shown'); }
         const r = { status: o.ok ? 'richtig' : 'falsch', title: o.ok ? 'Richtig' : 'Leider falsch', msgs: [], mids: o.ok ? [] : (o.mid ? [o.mid] : []) };
         if (o.why) r.msgs.push(o.why);
         if (ex.explain) r.msgs.push(ex.explain);
@@ -921,8 +1075,8 @@
       list.appendChild(b);
     });
     btnNext.addEventListener('click', () => done(outcome, mid ? [mid] : []));
-    put(wrap, el('div', { class: 'eyebrow ex-kind', text: ex.choose ? 'Welche Formel ist richtig?' : 'Wähle die richtige Antwort' }),
-      el('p', { class: 'prompt', text: ex.prompt }), ex.formula ? formulaBox(ex.formula, 'big') : null, ex.diagram ? diagram(ex.diagram, { small: true }) : null,
+    put(wrap, el('div', { class: 'eyebrow ex-kind', text: ex.text ? 'Welches Wort passt in die Lücke?' : ex.choose ? 'Welche Formel ist richtig?' : 'Wähle die richtige Antwort' }),
+      el('p', { class: 'prompt', text: ex.prompt }), ex.text ? el('section', { class: 'card gap-card' }, gapSentence(ex.text, gap)) : null, ex.formula ? formulaBox(ex.formula, 'big') : null, ex.diagram ? diagram(ex.diagram, { small: true }) : null,
       ex.sheet ? sheetGrid(ex.sheet, { target: ex.target, fill: ex.fill, maxHeight: '36vh' }) : null, list, fbSlot, el('div', { class: 'row-btns' }, btnNext));
     return wrap;
   }
@@ -970,6 +1124,7 @@
     const btnCheck = el('button', { class: 'btn primary', onclick: () => check() }, 'Prüfen');
     const btnNext = el('button', { class: 'btn primary', style: { display: 'none' } }, 'Weiter');
     let outcome = null;
+    if (ex.long) { answer.classList.add('long'); chips.classList.add('long'); }
     function draw() {
       answer.innerHTML = '';
       answer.appendChild(el('span', { class: 'order-fix', text: ex.prefix || '' }));
@@ -1011,6 +1166,92 @@
     put(wrap, el('div', { class: 'card flash-front' }, el('div', { class: 'eyebrow', text: 'Frage' }), el('p', { class: 'big-q', text: ex.front })),
       el('p', { class: 'small muted', text: 'Überlege dir die Antwort, bevor du sie aufdeckst.' }), btnShow, back, rate);
     return wrap;
+  }
+
+  // =====================================================================
+  // Linking words (Spickzettel) und Probe-Texte (Englisch)
+  // =====================================================================
+  function wordbankBody(s) {
+    return (s.wordbank || []).map((g) => el('section', { class: 'card wb-group' }, el('div', { class: 'wb-head' }, el('b', { text: g.name }), el('span', { class: 'small muted', text: g.hint })),
+      el('div', { class: 'wb-list' }, g.words.map((w) => el('div', { class: 'wb-row' }, el('span', { class: 'wb-en', lang: 'en', text: w[0] }), el('span', { class: 'wb-de', text: w[1] }))))));
+  }
+  function viewWordbank(s) {
+    screen({ title: 'Linking words', sub: s.name, back: '#/', color: s.color },
+      el('p', { class: 'muted', text: 'Die wichtigsten linking words für deinen Comment, nach Aufgabe sortiert. Am Satzanfang immer mit Komma: „However, …“' }), ...wordbankBody(s));
+  }
+  function wordbankOverlay(s) {
+    closeMenu();
+    const sheet = el('div', { class: 'menu-sheet wb-sheet', role: 'dialog', 'aria-label': 'Linking words' }, el('div', { class: 'menu-grab' }),
+      el('div', { class: 'menu-title', text: 'Linking words' }), ...wordbankBody(s),
+      el('button', { class: 'btn ghost block', onclick: () => closeMenu() }, 'Schließen'));
+    menuEl = el('div', { class: 'menu-ov', onclick: (e) => { if (e.target === menuEl) closeMenu(); } }, sheet);
+    document.body.appendChild(menuEl);
+    requestAnimationFrame(() => menuEl && menuEl.classList.add('show'));
+  }
+  const essayById = (id) => { for (const s of SUBJECTS) for (const k of s.essays || []) if (k.id === id) return { k, s }; return null; };
+  function viewEssays(s) {
+    const name = (s.levelNames || {}).essay || 'Probe-Text';
+    const parts = [el('p', { class: 'muted', text: 'Schreibe einen ganzen Text. Danach prüft die App Länge, Absätze, linking words und Stil und zeigt dir einen Mustertext.' })];
+    for (const k of s.essays || []) {
+      const st = P.essays[k.id] || {};
+      parts.push(el('section', { class: 'card exam-item' },
+        el('div', null, el('b', { text: k.title }), el('div', { class: 'small muted', text: 'ca. ' + k.minutes + ' Min. · mind. ' + k.minWords + ' Wörter' + (st.best ? ' · ★ ' + st.best : '') })),
+        el('a', { class: 'btn primary', style: { background: s.color }, href: '#/aufsatz/' + k.id }, st.draft ? 'Weiter' : 'Starten')));
+    }
+    screen({ title: name, sub: s.name, back: '#/', color: s.color }, ...parts);
+  }
+  function viewEssay(id) {
+    const f = essayById(id);
+    if (!f) return viewPath();
+    const { k, s } = f;
+    const ta = el('textarea', { class: 'w-input essay-input', rows: 14, placeholder: 'Einleitung …\n\nHauptteil …\n\nSchluss …', lang: 'en', spellcheck: 'true', autocapitalize: 'sentences' });
+    ta.value = (P.essays[k.id] || {}).draft || '';
+    const info = el('span', { class: 'small muted' });
+    const upd = () => { info.textContent = TextCheck.words(ta.value) + ' / ' + k.minWords + ' Wörter · ' + TextCheck.paragraphs(ta.value).length + ' Absätze'; };
+    let tmr = null;
+    ta.addEventListener('input', () => { upd(); clearTimeout(tmr); tmr = setTimeout(() => { P.essays[k.id] = Object.assign({}, P.essays[k.id], { draft: ta.value }); saveP(); }, 600); });
+    upd();
+    screen({ title: k.title, back: '#/', color: s.color, cls: 'essay' },
+      el('section', { class: 'card task-card', lang: 'en' }, el('div', { class: 'eyebrow', text: 'Aufgabe' }), el('b', { text: k.task })),
+      el('p', { class: 'small muted', text: 'Schreibe Einleitung, Hauptteil (2–3 Absätze) und Schluss – jeden Absatz in eine neue Zeile. Dein Text wird automatisch gespeichert.' }),
+      el('div', { class: 'essay-bar' }, info, el('button', { class: 'btn small-btn', onclick: () => wordbankOverlay(s) }, 'Linking words')),
+      ta,
+      el('button', { class: 'btn primary block', style: { background: s.color }, onclick: () => submitEssay(k, s, ta.value) }, 'Fertig – prüfen'));
+  }
+  function submitEssay(k, s, text) {
+    if (TextCheck.words(text) < 40) { toast('Dein Text ist noch sehr kurz.'); return; }
+    const a = TextCheck.analyse(text, { bank: s.wordbank, opinion: (s.lists || {}).opinion, conclude: (s.lists || {}).conclude, minWords: k.minWords });
+    const okN = a.checks.filter((c) => c.ok).length;
+    const got = okN >= 6 && a.checks[0].ok ? 3 : okN >= 4 ? 2 : 1;
+    const er = P.essays[k.id] || {};
+    P.essays[k.id] = Object.assign({}, er, { draft: text, best: Math.max(er.best || 0, got), last: today() });
+    const lid = 'essay:' + k.id;
+    const lr = P.levels[lid] || { stars: 0, plays: 0 };
+    lr.stars = Math.max(lr.stars || 0, got);
+    lr.plays = (lr.plays || 0) + 1;
+    lr.last = today();
+    P.levels[lid] = lr;
+    countAnswer(got >= 2 ? 'first' : 'wrong', null);
+    saveP();
+    checkRewards();
+    renderEssayResult(k, s, text, a, got);
+  }
+  function renderEssayResult(k, s, text, a, got) {
+    const L = pathOf(s);
+    const lvl = L.find((l) => l.id === 'essay:' + k.id);
+    const next = lvl ? L[lvl.i + 1] : null;
+    const bank = TextCheck.bankWords(s.wordbank);
+    const toHtml = (t) => TextCheck.markHtml(t, bank).replace(/\n+/g, '<br><br>');
+    screen({ title: k.title, back: '#/', color: s.color },
+      el('section', { class: 'card level-result', style: { '--c': s.color } }, el('div', { class: 'eyebrow', text: 'Auswertung' }), stars(got, 54),
+        el('div', { class: 'big', text: got === 3 ? 'Sehr gut!' : got === 2 ? 'Gut gemacht!' : 'Ein Anfang!' }),
+        el('div', { class: 'muted', text: a.words + ' Wörter · ' + a.paragraphs + ' Absätze · ' + a.linking.length + ' linking words' })),
+      el('h2', { text: 'Automatisch geprüft' }), el('section', { class: 'card' }, checklistEl(a.checks)),
+      el('h2', { text: 'Prüfe selbst' }), el('section', { class: 'card' }, el('ul', { class: 'checklist self' }, (s.essaySelf || []).map((t) => el('li', null, el('label', null, el('input', { type: 'checkbox' }), el('span', { text: ' ' + t })))))),
+      el('h2', { text: 'Dein Text' }), el('section', { class: 'card model-text', lang: 'en', html: toHtml(text) }),
+      el('details', { class: 'card model-box' }, el('summary', null, 'Mustertext anzeigen'), el('div', { class: 'model-text', lang: 'en', html: toHtml(k.model) })),
+      next ? el('button', { class: 'btn primary block', style: { background: next.color }, onclick: () => startLevel(next) }, 'Weiter: Level ' + next.n) : null,
+      el('div', { class: 'row-links' }, el('button', { class: 'link-btn', onclick: () => viewEssay(k.id) }, 'Text überarbeiten'), el('button', { class: 'link-btn', onclick: () => go('#/') }, 'Zur Übersicht')));
   }
 
   // =====================================================================
@@ -1293,7 +1534,8 @@
     window.LernappDebug = {
       report() {
         return SUBJECTS.map((s) => ({ subject: s.id, levels: pathOf(s).map((l) => ({ id: l.id, kind: l.kind, n: l.kind === 'exam' ? 1 : levelItems(l).length })),
-          choices: s.topics.flatMap((t) => t.exercises.filter((e) => e.type === 'formel').map((e) => ({ id: e.id, d3: distractors(e, 2).map((x) => x.f), d4: distractors(e, 3).length }))) }));
+          choices: s.topics.flatMap((t) => t.exercises.filter((e) => e.type === 'formel' || e.type === 'luecke').map((e) => (e.type === 'formel'
+            ? { id: e.id, d3: distractors(e, 2).map((x) => x.f), d4: distractors(e, 3).length } : { id: e.id, d3: (e.wrong || []).slice(0, 2).map((x) => x.t), d4: (e.wrong || []).slice(0, 3).length }))) }));
       },
     };
     route();
