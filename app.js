@@ -1,5 +1,5 @@
-/* Lernapp – Hauptprogramm. Lernen als Level-Weg: pro Thema erst Erkennen (Auswahl), dann Üben, dann selber tippen,
-   dazwischen Wiederholungen, am Ende Probeklausuren. Alles Weitere (Themen, Videos, Fehler, Erfolge) liegt im Menü.
+/* Lernapp – Hauptprogramm. Startseite mit den Fächern, je Fach ein Level-Weg: pro Thema erst Erkennen (Auswahl), dann Üben,
+   dann selber tippen, dazwischen Wiederholungen, am Ende Probeklausuren. Alles Weitere (Themen, Videos, Fehler) liegt im Menü.
    Der Fortschritt bleibt auf dem jeweiligen Gerät. */
 (function () {
   'use strict';
@@ -42,6 +42,9 @@
     const list = mySubjects();
     return list.find((s) => s.id === P.cur) || list[0];
   }
+  // Level-Weg eines Fachs; die Startseite '#/' zeigt alle Fächer
+  const pathHash = (s) => '#/f/' + (s || curSubject()).id;
+  const subjectIcon = (s) => s.icon || 'book';
 
   // =====================================================================
   // Fortschritt (Lernkartei mit 5 Fächern, Level mit Sternen) – nur auf diesem Gerät
@@ -388,33 +391,41 @@
   window.addEventListener('hashchange', () => route());
 
   let updateReady = false;
+  // Startseite ('#/') und Level-Weg eines Fachs ('#/f/<fach>'): hier ist man „zu Hause“
+  const REST = /^(#\/?)?(f\/[^/]+)?$/;
+  const atRest = () => REST.test(location.hash);
+  // Erfolge und Einstellungen öffnet man von der Startseite oder vom Level-Weg: „Zurück“ führt dorthin zurück
+  let lastRest = '#/', curHash = null, prevHash = null;
   function route() {
     if (!COURSE) return;
-    // neue Version ist da: beim Weg zurück zur Startseite einmal neu laden (nie mitten in einer Runde)
-    if (updateReady && !location.hash.replace(/^#\/?/, '')) { updateReady = false; location.reload(); return; }
+    // neue Version ist da: auf der Startseite oder dem Level-Weg einmal neu laden (nie mitten in einer Runde)
+    if (updateReady && atRest()) { updateReady = false; location.reload(); return; }
     if (examState && !examState.submitted && !location.hash.startsWith('#/klausur/')) {
       if (!confirm('Die Probeklausur läuft noch. Wirklich verlassen? Deine Antworten gehen verloren.')) { history.back(); return; }
       stopExamTimer();
       examState = null;
     }
+    if (location.hash !== curHash) { prevHash = curHash; curHash = location.hash; }
+    if (atRest()) lastRest = location.hash.startsWith('#/f/') ? location.hash : '#/';
     const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
-    if (!parts.length) return viewPath();
+    if (!parts.length) return viewHome();
     const [a, b, c] = parts;
-    if (a === 'level' && b) { const l = levelById(b); return l ? startLevel(l) : viewPath(); }
+    if (a === 'level' && b) { const l = levelById(b); return l ? startLevel(l) : viewHome(); }
     if (a === 'f' && b) {
       const s = subjectById(b);
-      if (!s) return viewPath();
+      if (!s) return viewHome();
+      if (c === 'themen') return viewThemen(s);
       if (c === 'klausur') return viewExams(s);
       if (c === 'fehler') return viewMistakes(s);
       if (c === 'videos') return viewVideos(s);
       if (c === 'woerter') return viewWordbank(s);
       if (c === 'aufsaetze') return viewEssays(s);
-      return viewThemen(s);
+      return viewPath(s);
     }
     if (a === 'themen') return viewThemen(curSubject());
     if (a === 't' && b) {
       const t = topicById(b);
-      if (!t) return viewPath();
+      if (!t) return viewHome();
       if (c === 'lernen') return viewCards(t);
       if (c === 'beispiel') return viewExample(t);
       if (c === 'ueben') return startTopicPractice(t);
@@ -426,8 +437,8 @@
     if (a === 'klausur' && b) return viewExamStart(b);
     if (a === 'aufsatz' && b) return viewEssay(b);
     if (a === 'einstellungen') return viewSettings();
-    if (a === 'session') return session && !session.ended ? renderSession() : viewPath();
-    return viewPath();
+    if (a === 'session') return session && !session.ended ? renderSession() : viewPath(curSubject());
+    return viewHome();
   }
 
   // ---------- Menü (alles, was nicht zum Level-Weg gehört) ----------
@@ -438,51 +449,80 @@
     const s = curSubject();
     const tile = (ic, c) => el('span', { class: 'mi', style: { '--c': c } }, icon(ic));
     const row = (ic, label, hash, c) => el('a', { class: 'menu-row', href: hash, onclick: () => closeMenu() }, tile(ic, c), el('span', { text: label }), icon('chev', 'chev'));
-    const others = mySubjects().filter((x) => x.id !== s.id);
     const sheet = el('div', { class: 'menu-sheet', role: 'dialog', 'aria-label': 'Menü' },
       el('div', { class: 'menu-grab' }),
-      row('list', 'Themen-Übersicht', '#/themen', '#4F5BD5'),
+      row('list', 'Themen-Übersicht', '#/f/' + s.id + '/themen', '#4F5BD5'),
       playlistOf(s).length ? row('play', 'Alle Videos', '#/f/' + s.id + '/videos', '#DD4238') : null,
       s.wordbank ? row('book', 'Linking words', '#/f/' + s.id + '/woerter', '#0E9F8E') : null,
       (s.exams || []).length ? row('exam', 'Probeklausur', '#/f/' + s.id + '/klausur', '#1F2A44') : null,
       (s.essays || []).length ? row('pencil', ((s.levelNames || {}).essay || 'Probe-Text') + ' schreiben', '#/f/' + s.id + '/aufsaetze', '#8A4FD8') : null,
       row('alert', 'Häufige Fehler', '#/f/' + s.id + '/fehler', '#E8762B'),
       row('trophy', 'Erfolge', '#/erfolge', '#C98A00'),
-      others.map((x) => el('button', { class: 'menu-row', onclick: () => { P.cur = x.id; saveP(); closeMenu(); go('#/'); } }, tile('grid', x.color), el('span', { text: 'Fach wechseln: ' + x.name }), icon('chev', 'chev'))),
       row('gear', 'Einstellungen', '#/einstellungen', '#687385'));
     menuEl = el('div', { class: 'menu-ov', onclick: (e) => { if (e.target === menuEl) closeMenu(); } }, sheet);
     document.body.appendChild(menuEl);
     requestAnimationFrame(() => menuEl && menuEl.classList.add('show'));
   }
 
-  function openSubjects() {
-    closeMenu();
-    const s = curSubject();
-    const sheet = el('div', { class: 'menu-sheet', role: 'dialog', 'aria-label': 'Fach wählen' }, el('div', { class: 'menu-grab' }),
-      el('div', { class: 'menu-title', text: 'Fach wählen' }),
-      mySubjects().map((x) => el('button', { class: 'menu-row', onclick: () => { P.cur = x.id; saveP(); closeMenu(); go('#/'); } },
-        el('span', { class: 'menu-dot', style: { background: x.color } }), el('span', null, el('b', { text: x.name }), el('small', { class: 'muted', text: ' · ' + x.sub })),
-        x.id === s.id ? icon('check') : icon('chev', 'chev'))));
-    menuEl = el('div', { class: 'menu-ov', onclick: (e) => { if (e.target === menuEl) closeMenu(); } }, sheet);
-    document.body.appendChild(menuEl);
-    requestAnimationFrame(() => menuEl && menuEl.classList.add('show'));
+  // =====================================================================
+  // Startseite: die Fächer, darunter Streak und Tagesziel
+  // =====================================================================
+  function viewHome() {
+    const st = streak();
+    const g = goal(), c = Math.min(countOn(today()), g);
+    const top = el('div', { class: 'home-top' },
+      el('img', { src: 'icons/icon-192.png', alt: '', class: 'home-logo', width: 44, height: 44 }),
+      el('div', { class: 'home-title' }, el('h1', { text: 'Lernapp' }), el('span', { text: 'Was lernst du heute?' })),
+      el('a', { class: 'icon-btn', href: '#/einstellungen', 'aria-label': 'Einstellungen' }, icon('gear')));
+    const cards = mySubjects().map((s) => {
+      const L = pathOf(s);
+      const done = L.filter(levelDone).length;
+      const got = L.reduce((a, l) => a + ((P.levels[l.id] || {}).stars || 0), 0);
+      // was als Nächstes kommt (wie der Start-Knopf auf dem Level-Weg)
+      const lvlTxt = (l) => 'Level ' + l.n + ' · ' + (l.topic ? l.title : l.name);
+      const weak = done === L.length ? L.find((l) => (P.levels[l.id].stars || 0) < 3) : null;
+      const [hint, next] = done < L.length ? [done ? 'Weiter mit' : 'Los geht’s mit', lvlTxt(L[currentIndex(s)])]
+        : weak ? ['Mehr Sterne holen', lvlTxt(weak)] : ['Alles geschafft', 'Alle Level mit 3 Sternen'];
+      return el('a', { class: 'subj', href: pathHash(s), style: { '--c': s.color } },
+        el('span', { class: 'subj-bg', 'aria-hidden': 'true' }, icon(subjectIcon(s))),
+        el('span', { class: 'subj-head' }, el('span', { class: 'subj-ic' }, icon(subjectIcon(s))),
+          el('span', { class: 'subj-name' }, el('b', { text: s.name }), el('span', { text: s.sub }))),
+        el('span', { class: 'subj-prog' },
+          el('span', { class: 'subj-bar' }, el('i', { style: { width: Math.round(100 * done / L.length) + '%' } })),
+          el('span', { text: done + '/' + L.length + ' Level' }),
+          el('span', { class: 'subj-stars', 'aria-label': got + ' Sterne' }, stars(1, 15).firstChild, String(got))),
+        el('span', { class: 'subj-next' }, el('span', { class: 'sn-text' }, el('small', { text: hint }), el('b', { text: next })),
+          el('span', { class: 'sn-go' }, icon('chev'))));
+    });
+    const day = el('a', { class: 'card today-card', href: '#/erfolge' },
+      el('span', { class: 'tc-head' },
+        el('span', { class: 'tc-flame' + (st ? ' on' : '') }, icon('flame')),
+        el('span', { class: 'tc-text' }, el('b', { text: st + (st === 1 ? ' Tag' : ' Tage') + ' in Folge' }),
+          el('span', { class: 'small muted', text: c >= g ? 'Tagesziel geschafft' : 'Tagesziel: ' + c + ' von ' + g + ' Aufgaben' })),
+        el('span', { class: 'tc-link' }, 'Erfolge', icon('chev'))),
+      weekStrip());
+    screen({ title: null, cls: 'home-page' }, top,
+      el('div', { class: 'row-head' }, el('h2', { text: 'Deine Fächer' }), SUBJECTS.length > 1 ? el('a', { class: 'link-sm', href: '#/faecher' }, 'Ändern') : null),
+      el('div', { class: 'subj-list' }, cards),
+      el('div', { class: 'row-head' }, el('h2', { text: 'Heute' })),
+      day);
   }
 
   // =====================================================================
-  // Start = der Level-Weg
+  // Level-Weg eines Fachs
   // =====================================================================
-  function viewPath() {
-    const s = curSubject();
+  function viewPath(s) {
+    s = s || curSubject();
+    if (P.cur !== s.id) { P.cur = s.id; saveP(); }
     const L = pathOf(s);
     const cur = currentIndex(s);
-    const st = streak();
     const g = goal(), c = Math.min(countOn(today()), g);
     const bar = el('div', { class: 'path-top' },
-      el('a', { class: 'pt-streak' + (st ? ' on' : ''), href: '#/erfolge', 'aria-label': st + ' Tage in Folge' }, icon('flame'), el('b', { text: String(st) })),
-      el(mySubjects().length > 1 ? 'button' : 'div', { class: 'pt-title' + (mySubjects().length > 1 ? ' pt-switch' : ''), onclick: mySubjects().length > 1 ? openSubjects : null, 'aria-label': 'Fach wechseln' },
-        el('b', null, s.name, mySubjects().length > 1 ? el('span', { class: 'pt-caret', text: ' ▾' }) : null), el('span', { class: 'pt-goal' }, el('i', { style: { width: Math.round(100 * c / g) + '%' } })),
+      el('button', { class: 'icon-btn pt-back', 'aria-label': 'Zur Startseite', onclick: () => go('#/') }, icon('back')),
+      el('div', { class: 'pt-title' },
+        el('b', { text: s.name }), el('span', { class: 'pt-goal' }, el('i', { style: { width: Math.round(100 * c / g) + '%' } })),
         el('span', { class: 'pt-goal-txt', text: c >= g ? 'Tagesziel geschafft' : 'Heute ' + c + ' von ' + g })),
-      el('button', { class: 'icon-btn', 'aria-label': 'Menü', onclick: openMenu }, icon('menu')));
+      el('button', { class: 'icon-btn pt-menu', 'aria-label': 'Menü', onclick: openMenu }, icon('menu')));
     const path = el('div', { class: 'path' });
     let lastGroup = null;
     L.forEach((l, i) => {
@@ -534,8 +574,9 @@
     const seen = t ? P.seen[t.id] || {} : {};
     if (!opts.skipIntro && l.kind === 'choose' && t && !seen.intro && (hasVideo(t) ? !seen.video : (t.cards || []).length && !seen.cards)) return viewLevelIntro(l);
     const items = levelItems(l);
-    if (!items.length) { toast('Für dieses Level gibt es noch keine Aufgaben.'); go('#/'); return; }
-    startSession(items, 'Level ' + l.n, '#/', t, l);
+    const back = pathHash(subjectById(l.subject));
+    if (!items.length) { toast('Für dieses Level gibt es noch keine Aufgaben.'); go(back); return; }
+    startSession(items, 'Level ' + l.n, back, t, l);
   }
   function viewLevelIntro(l) {
     const t = topicById(l.topic);
@@ -544,7 +585,7 @@
     const go2 = () => { markSeen(t.id, 'intro'); startLevel(l, { skipIntro: true }); };
     const vid = hasVideo(t);
     const nCards = (t.cards || []).length;
-    screen({ title: 'Level ' + l.n, sub: t.title, back: '#/', color: colorOf(t), cls: 'intro' },
+    screen({ title: 'Level ' + l.n, sub: t.title, back: pathHash(s), color: colorOf(t), cls: 'intro' },
       el('section', { class: 'card intro-card', style: { '--c': colorOf(t) } },
         el('span', { class: 'intro-ic' }, icon(vid ? 'play' : 'book')),
         el('div', { class: 'eyebrow', text: 'Neues Thema' }),
@@ -578,7 +619,7 @@
             t.focus ? el('span', { class: 'chip', style: { '--c': s.color }, text: 'Klausur' }) : null)),
         icon('chev', 'chev')));
     });
-    screen({ title: 'Themen', sub: s.name, back: '#/', color: s.color },
+    screen({ title: 'Themen', sub: s.name, back: pathHash(s), color: s.color },
       el('p', { class: 'muted', text: 'Hier kannst du ein Thema gezielt anschauen oder üben.' }), list);
   }
   function viewTopic(t) {
@@ -599,7 +640,7 @@
     const btn = (ic, label, sub, onclick, done) => el('button', { class: 'action', style: { '--c': colorOf(t) }, onclick },
       el('span', { class: 'act-ic' }, icon(ic)), el('span', { class: 'act-text' }, el('b', { text: label }), el('span', { class: 'small', text: sub })),
       done ? el('span', { class: 'act-done' }, icon('check')) : icon('chev', 'chev'));
-    screen({ title: t.title, sub: s.name, back: '#/f/' + s.id, color: colorOf(t) },
+    screen({ title: t.title, sub: s.name, back: '#/f/' + s.id + '/themen', color: colorOf(t) },
       levelRow,
       el('section', { class: 'actions' },
         hasVideo(t) ? btn('play', 'Video', 'Erklärvideo' + (ventry && ventry.sec ? ' · ' + fmtDur(ventry.sec) : ''), () => playVideo(topicVideo(t)), seen.video) : null,
@@ -654,7 +695,7 @@
       el('span', { class: 'vnum' + (videoSeen(e) ? ' seen' : ''), style: { '--c': s.color } }, videoSeen(e) ? icon('check') : String(i + 1)),
       el('span', { class: 'tr-text' }, el('b', { text: e.title }), el('span', { class: 'small muted', text: fmtDur(e.sec) })),
       icon('play', 'chev'))));
-    screen({ title: 'Alle Videos', sub: s.name, back: '#/', color: s.color },
+    screen({ title: 'Alle Videos', sub: s.name, back: pathHash(s), color: s.color },
       el('p', { class: 'muted', text: 'Zu jeder Formel ein kurzes Video: woran du sie erkennst, wie sie aufgebaut ist, ein Beispiel und ein Kurz-Check.' }),
       el('button', { class: 'btn primary block', style: { background: s.color }, onclick: () => playVideo(first, pl) }, icon('play'),
         first === pl[0] ? 'Alle abspielen' : 'Weiter mit Video ' + (pl.indexOf(first) + 1)),
@@ -665,7 +706,7 @@
   // after: beim Einstieg in ein neues Level – nach der letzten Karte geht es direkt los
   function viewCards(t, after) {
     let i = 0;
-    const main = screen({ title: after ? 'Kurz erklärt' : 'Erklärung', sub: t.title, back: after ? '#/' : '#/t/' + t.id, color: colorOf(t) });
+    const main = screen({ title: after ? 'Kurz erklärt' : 'Erklärung', sub: t.title, back: after ? pathHash(subjectById(t._subject)) : '#/t/' + t.id, color: colorOf(t) });
     function draw() {
       main.innerHTML = '';
       const c = t.cards[i];
@@ -773,7 +814,7 @@
       parts.push(el('h3', { class: 'group-h', style: { color: colorOf(t) }, text: t.title }));
       ms.forEach((m) => parts.push(mistakeCard(m, P.mistakes[m.id] && P.mistakes[m.id].n)));
     }
-    screen({ title: 'Häufige Fehler', sub: s.name, back: '#/', color: s.color }, ...parts);
+    screen({ title: 'Häufige Fehler', sub: s.name, back: pathHash(s), color: s.color }, ...parts);
   }
 
   // =====================================================================
@@ -880,9 +921,9 @@
         'Weiter: ' + nextName(next)) : null,
       el('div', { class: 'row-links' },
         el('button', { class: 'link-btn', onclick: () => startLevel(l, { skipIntro: true }) }, 'Level nochmal'),
-        el('button', { class: 'link-btn', onclick: () => go('#/') }, 'Zur Übersicht')),
+        el('button', { class: 'link-btn', onclick: () => go(pathHash(subjectById(l.subject))) }, 'Zur Übersicht')),
       ...roundMistakes(s)];
-    screen({ title: 'Level ' + l.n, back: '#/', color: l.color }, ...parts);
+    screen({ title: 'Level ' + l.n, back: pathHash(subjectById(l.subject)), color: l.color }, ...parts);
     if (got === 3) confetti(app.querySelector('.level-result'));
   }
   const nextName = (l) => (l.kind === 'exam' || l.kind === 'essay' ? l.name : 'Level ' + l.n);
@@ -1231,7 +1272,7 @@
       el('div', { class: 'wb-list' }, g.words.map((w) => el('div', { class: 'wb-row' }, el('span', { class: 'wb-en', lang: 'en', text: w[0] }), el('span', { class: 'wb-de', text: w[1] }))))));
   }
   function viewWordbank(s) {
-    screen({ title: 'Linking words', sub: s.name, back: '#/', color: s.color },
+    screen({ title: 'Linking words', sub: s.name, back: pathHash(s), color: s.color },
       el('p', { class: 'muted', text: 'Die wichtigsten linking words für deinen Comment, nach Aufgabe sortiert. Am Satzanfang immer mit Komma: „However, …“' }), ...wordbankBody(s));
   }
   function wordbankOverlay(s) {
@@ -1253,11 +1294,11 @@
         el('div', null, el('b', { text: k.title }), el('div', { class: 'small muted', text: 'ca. ' + k.minutes + ' Min. · mind. ' + k.minWords + ' Wörter' + (st.best ? ' · ★ ' + st.best : '') })),
         el('a', { class: 'btn primary', style: { background: s.color }, href: '#/aufsatz/' + k.id }, st.draft ? 'Weiter' : 'Starten')));
     }
-    screen({ title: name, sub: s.name, back: '#/', color: s.color }, ...parts);
+    screen({ title: name, sub: s.name, back: pathHash(s), color: s.color }, ...parts);
   }
   function viewEssay(id) {
     const f = essayById(id);
-    if (!f) return viewPath();
+    if (!f) return viewHome();
     const { k, s } = f;
     const ta = el('textarea', { class: 'w-input essay-input', rows: 14, placeholder: 'Einleitung …\n\nHauptteil …\n\nSchluss …', lang: 'en', spellcheck: 'true', autocapitalize: 'sentences' });
     ta.value = (P.essays[k.id] || {}).draft || '';
@@ -1268,7 +1309,7 @@
     ta.addEventListener('input', () => { upd(); clearTimeout(tmr); tmr = setTimeout(save, 600); });
     ta.addEventListener('blur', save);
     upd();
-    screen({ title: k.title, back: '#/', color: s.color, cls: 'essay' },
+    screen({ title: k.title, back: pathHash(s), color: s.color, cls: 'essay' },
       el('section', { class: 'card task-card', lang: 'en' }, el('div', { class: 'eyebrow', text: 'Aufgabe' }), el('b', { text: k.task })),
       el('p', { class: 'small muted', text: 'Schreibe Einleitung, Hauptteil (2–3 Absätze) und Schluss – jeden Absatz in eine neue Zeile. Dein Text wird automatisch gespeichert.' }),
       el('div', { class: 'essay-bar' }, info, el('button', { class: 'btn small-btn', onclick: () => wordbankOverlay(s) }, 'Linking words')),
@@ -1301,7 +1342,7 @@
     const next = lvl ? L[lvl.i + 1] : null;
     const bank = TextCheck.bankWords(s.wordbank);
     const toHtml = (t) => TextCheck.markHtml(t, bank).replace(/\n+/g, '<br><br>');
-    screen({ title: k.title, back: '#/', color: s.color },
+    screen({ title: k.title, back: pathHash(s), color: s.color },
       el('section', { class: 'card level-result', style: { '--c': s.color } }, el('div', { class: 'eyebrow', text: 'Auswertung' }), stars(got, 54),
         el('div', { class: 'big', text: got === 3 ? 'Sehr gut!' : got === 2 ? 'Gut gemacht!' : 'Ein Anfang!' }),
         el('div', { class: 'muted', text: a.words + ' Wörter · ' + a.paragraphs + ' Absätze · ' + a.linking.length + ' linking words' })),
@@ -1310,7 +1351,7 @@
       el('h2', { text: 'Dein Text' }), el('section', { class: 'card model-text', lang: 'en', html: toHtml(text) }),
       el('details', { class: 'card model-box' }, el('summary', null, 'Mustertext anzeigen'), el('div', { class: 'model-text', lang: 'en', html: toHtml(k.model) })),
       next ? el('button', { class: 'btn primary block', style: { background: next.color }, onclick: () => go('#/level/' + encodeURIComponent(next.id)) }, 'Weiter: ' + nextName(next)) : null,
-      el('div', { class: 'row-links' }, el('button', { class: 'link-btn', onclick: () => viewEssay(k.id) }, 'Text überarbeiten'), el('button', { class: 'link-btn', onclick: () => go('#/') }, 'Zur Übersicht')));
+      el('div', { class: 'row-links' }, el('button', { class: 'link-btn', onclick: () => viewEssay(k.id) }, 'Text überarbeiten'), el('button', { class: 'link-btn', onclick: () => go(pathHash(s)) }, 'Zur Übersicht')));
   }
 
   // =====================================================================
@@ -1329,8 +1370,8 @@
       }
     };
     draw();
-    screen({ title: 'Fächer wählen', back: '#/einstellungen' },
-      el('p', { class: 'muted', text: 'Wähle deine Fächer. Neue Fächer kommen nach und nach dazu. Zwischen den Fächern wechselst du im Menü.' }),
+    screen({ title: 'Fächer wählen', back: prevHash === '#/einstellungen' ? '#/einstellungen' : lastRest },
+      el('p', { class: 'muted', text: 'Wähle, welche Fächer auf deiner Startseite stehen. Neue Fächer kommen nach und nach dazu.' }),
       list,
       el('button', { class: 'btn primary block', onclick: () => {
         if (!sel.size) { toast('Wähle mindestens ein Fach.'); return; }
@@ -1350,11 +1391,11 @@
     const earned = MEDALS.filter((m) => P.medals[m.id]).length;
     const grid = el('div', { class: 'medal-grid' }, MEDALS.map((m) => el('div', { class: 'medal-cell' + (P.medals[m.id] ? '' : ' locked') },
       medal({ color: m.color, glyph: m.glyph, size: 52, locked: !P.medals[m.id] }), el('b', { text: m.name }), el('span', { class: 'small muted', text: m.desc }))));
-    const sub = curSubject();
-    const L = pathOf(sub);
+    // Level und Sterne aller eigenen Fächer zusammen
+    const L = mySubjects().flatMap(pathOf);
     const lDone = L.filter(levelDone).length;
     const lStars = L.reduce((a, l) => a + ((P.levels[l.id] || {}).stars || 0), 0);
-    screen({ title: 'Erfolge', back: '#/' },
+    screen({ title: 'Erfolge', back: lastRest },
       el('section', { class: 'card streak-card' },
         el('div', { class: 'sk-top' }, el('span', { class: 'sk-flame' + (s ? ' on' : '') }, icon('flame')), el('div', null, el('div', { class: 'sk-num', text: String(s) }), el('div', { class: 'muted small', text: (s === 1 ? 'Tag' : 'Tage') + ' in Folge · Rekord ' + (P.best || 0) }))),
         weekStrip(),
@@ -1385,15 +1426,15 @@
         el('div', null, el('b', { text: k.title }), el('div', { class: 'small muted', text: k.minutes + ' Min. · ' + examMax(k) + ' Punkte' + (st ? ' · Bestes: ' + fmtP(st.best) + ' P.' : '') })),
         el('a', { class: 'btn primary', style: { background: s.color }, href: '#/klausur/' + k.id }, st ? 'Nochmal' : 'Starten')));
     }
-    screen({ title: 'Probeklausur', sub: s.name, back: '#/', color: s.color }, ...parts);
+    screen({ title: 'Probeklausur', sub: s.name, back: pathHash(s), color: s.color }, ...parts);
   }
   function viewExamStart(id) {
     const k = examById(id);
-    if (!k) return viewPath();
+    if (!k) return viewHome();
     const s = subjectById(k._subject);
     if (examState && examState.k.id === id && !examState.submitted) return renderExam();
     if (examState && examState.k.id === id && examState.submitted) return renderExamResult();
-    screen({ title: k.title, back: '#/' },
+    screen({ title: k.title, back: pathHash(s) },
       el('section', { class: 'card' }, el('p', { text: k.intro }),
         el('ul', { class: 'small' }, el('li', { text: k.tasks.length + ' Aufgaben, ' + examMax(k) + ' Punkte, ' + k.minutes + ' Minuten' }),
           el('li', { text: 'Gelbe Zellen = hier gehört eine Formel hin. Die Werte zeigen, was herauskommen soll.' }), el('li', { text: 'Tippe auf eine Zelle, um sie in die Formel einzufügen.' }))),
@@ -1528,10 +1569,10 @@
       parts.push(el('button', { class: 'btn primary block', style: { background: s.color }, onclick: () => {
         const items = [...weakTopics].map(topicById).filter(Boolean).flatMap((t) => t.exercises).filter((e) => e.type === 'formel');
         examState = null;
-        startSession(interleave(shuffle(items)).slice(0, 10), 'Schwächen üben', '#/');
+        startSession(interleave(shuffle(items)).slice(0, 10), 'Schwächen üben', pathHash(s));
       } }, 'Schwache Themen üben'));
     }
-    parts.push(el('button', { class: 'btn ghost block', onclick: () => { examState = null; go('#/'); } }, 'Fertig'));
+    parts.push(el('button', { class: 'btn ghost block', onclick: () => { examState = null; go(pathHash(s)); } }, 'Fertig'));
     screen({ title: k.title }, ...parts);
   }
 
@@ -1539,7 +1580,7 @@
   // Einstellungen
   // =====================================================================
   function viewSettings() {
-    screen({ title: 'Einstellungen', back: '#/' },
+    screen({ title: 'Einstellungen', back: lastRest },
       el('a', { class: 'link-row card', href: '#/faecher' }, icon('grid'), el('span', { text: 'Fächer wählen' }), icon('chev', 'chev')),
       el('section', { class: 'card' }, el('b', { text: 'App aufs Handy legen' }),
         el('p', { class: 'small', text: 'iPhone: Seite in Safari öffnen → Teilen → „Zum Home-Bildschirm“.' }),
@@ -1629,7 +1670,7 @@
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (!hadController) return;
       updateReady = true;
-      if (COURSE && !location.hash.replace(/^#\/?/, '') && !document.querySelector('.menu-ov')) route();
+      if (COURSE && atRest() && !document.querySelector('.menu-ov')) route();
     });
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }

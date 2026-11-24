@@ -59,6 +59,8 @@
     medal: '<circle cx="12" cy="14.5" r="5.5" /><path d="M8.5 3.5l3.5 5.5 3.5-5.5" />',
     chev: '<path d="M9 5.5l6.5 6.5L9 18.5" />',
     grid: '<rect x="4" y="4" width="16" height="16" rx="2.5" /><path d="M4 10h16M10 4v16" />',
+    table: '<rect x="3.5" y="4.5" width="17" height="15" rx="2" /><path d="M3.5 9.5h17M3.5 14.5h17M9.5 4.5v15" />',
+    chat: '<path d="M4.5 5.5h15A1.5 1.5 0 0 1 21 7v8.5a1.5 1.5 0 0 1-1.5 1.5H10l-4.5 3.5V17h-1A1.5 1.5 0 0 1 3 15.5V7a1.5 1.5 0 0 1 1.5-1.5z" /><path d="M7.5 10h9M7.5 13.2h6" />',
     menu: '<path d="M4 7h16M4 12h16M4 17h16" />',
     lock: '<rect x="5" y="11" width="14" height="9.5" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" />',
     list: '<path d="M9 6.5h11M9 12h11M9 17.5h11" /><circle cx="4.5" cy="6.5" r="1" /><circle cx="4.5" cy="12" r="1" /><circle cx="4.5" cy="17.5" r="1" />'
