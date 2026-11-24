@@ -1,5 +1,5 @@
 /* Lernapp – Offline-Speicher. App-Dateien aus dem Speicher, Inhalte zuerst aus dem Netz (damit Neues ankommt). */
-const CACHE = 'lernapp-202611241815';
+const CACHE = 'lernapp-202611241952';
 const MEDIA = 'lernapp-media';
 const SHELL = ['./', 'index.html', 'app.css', 'engine.js', 'checker.js', 'ui.js', 'crypto.js', 'textcheck.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-32.png', 'icons/apple-touch-icon.png'];
