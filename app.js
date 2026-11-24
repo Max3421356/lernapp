@@ -1,5 +1,6 @@
-/* Lernapp – Hauptprogramm: Anmeldung, Fächer, Themen, Üben (Lernkartei), Probeklausuren, häufige Fehler,
-   Belohnungen (Tagesziel, Streak, Medaillen). Der Fortschritt bleibt auf dem jeweiligen Gerät. */
+/* Lernapp – Hauptprogramm. Lernen als Level-Weg: pro Thema erst Erkennen (Auswahl), dann Üben, dann selber tippen,
+   dazwischen Wiederholungen, am Ende Probeklausuren. Alles Weitere (Themen, Videos, Fehler, Erfolge) liegt im Menü.
+   Der Fortschritt bleibt auf dem jeweiligen Gerät. */
 (function () {
   'use strict';
   const { el, icon, toast, formulaBox, sheetGrid, diagram, formulaInput, medal, medalPopup } = UI;
@@ -29,7 +30,7 @@
   }
   const subjectById = (id) => SUBJECTS.find((s) => s.id === id);
   const topicById = (id) => TOPICS.get(id);
-  const exById = (id) => EXS.get(id);
+  const exById = (id) => EXS.get(id) || CHOICE.get(id);
   const mistakeById = (id) => MISTAKES.get(id);
   const examById = (id) => { for (const s of SUBJECTS) for (const k of s.exams || []) if (k.id === id) return k; return null; };
   function mySubjects() {
@@ -37,11 +38,13 @@
     const list = SUBJECTS.filter((s) => !sel || sel.includes(s.id));
     return list.length ? list : SUBJECTS;
   }
-  const myTopics = () => mySubjects().flatMap((s) => s.topics);
-  const myExercises = () => myTopics().flatMap((t) => t.exercises);
+  function curSubject() {
+    const list = mySubjects();
+    return list.find((s) => s.id === P.cur) || list[0];
+  }
 
   // =====================================================================
-  // Fortschritt (Lernkartei mit 5 Fächern) – nur auf diesem Gerät
+  // Fortschritt (Lernkartei mit 5 Fächern, Level mit Sternen) – nur auf diesem Gerät
   // =====================================================================
   const PKEY = 'lernapp.progress.v1';
   const INTERVAL = { 1: 0, 2: 1, 3: 3, 4: 7, 5: 16 };
@@ -49,33 +52,21 @@
   const today = () => iso(new Date());
   const addDays = (s, n) => { const d = new Date(s + 'T12:00:00'); d.setDate(d.getDate() + n); return iso(d); };
   const STATS0 = () => ({ answered: 0, correct: 0, fixed: 0, combo: 0, bestCombo: 0, examsDone: 0, bestExamPct: 0 });
-  const defaults = () => ({ items: {}, mistakes: {}, seen: {}, exams: {}, settings: { goal: 10, examDates: {} }, tips: {}, subjects: null,
-    daily: {}, goalDays: {}, stats: STATS0(), medals: {}, tiers: {}, best: 0, last: null, vseen: {} });
+  const defaults = () => ({ items: {}, mistakes: {}, seen: {}, exams: {}, settings: { goal: 10 }, subjects: null, cur: null,
+    daily: {}, goalDays: {}, stats: STATS0(), medals: {}, best: 0, vseen: {}, levels: {} });
   let P = loadP();
   function loadP() {
     try {
       const raw = JSON.parse(localStorage.getItem(PKEY) || '{}');
       const p = Object.assign(defaults(), raw);
-      p.settings = Object.assign({ goal: 10, examDates: {} }, raw.settings || {});
+      p.settings = Object.assign({ goal: 10 }, raw.settings || {});
       p.stats = Object.assign(STATS0(), raw.stats || {});
+      p.levels = p.levels || {};
       return p;
     } catch (e) { return defaults(); }
   }
   function saveP() { try { localStorage.setItem(PKEY, JSON.stringify(P)); } catch (e) { /* voll oder privat */ } }
-
-  function mastery(topic) {
-    const ex = topic.exercises;
-    if (!ex.length) return 0;
-    let s = 0;
-    for (const e of ex) { const it = P.items[e.id]; if (it && it.box) s += Math.min(1, (it.box - 1) / 3); }
-    return Math.round(100 * s / ex.length);
-  }
-  const subjectMastery = (s) => (s.topics.length ? Math.round(s.topics.reduce((a, t) => a + mastery(t), 0) / s.topics.length) : 0);
-  function dueList() {
-    const t = today();
-    return myExercises().filter((e) => P.items[e.id] && P.items[e.id].due <= t)
-      .sort((a, b) => (P.items[a.id].due < P.items[b.id].due ? -1 : 1) || P.items[a.id].box - P.items[b.id].box);
-  }
+  const box = (id) => ((P.items[id] || {}).box || 0);
   function interleave(list) {
     const by = new Map();
     for (const e of list) { if (!by.has(e._topic)) by.set(e._topic, []); by.get(e._topic).push(e); }
@@ -85,10 +76,138 @@
     return out;
   }
   const shuffle = (a) => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
-  function daysUntil(dateStr) {
-    if (!dateStr) return null;
-    const a = new Date(today() + 'T12:00:00'), b = new Date(dateStr + 'T12:00:00');
-    return Math.round((b - a) / 86400000);
+
+  // =====================================================================
+  // Level-Weg: je Thema Erkennen → Üben → Selber tippen, alle zwei Themen eine Wiederholung, am Ende Probeklausuren
+  // =====================================================================
+  const KIND = {
+    choose: { name: 'Erkennen', icon: 'eye', hint: 'Wähle die richtige Antwort aus 3' },
+    mixed: { name: 'Üben', icon: 'cards', hint: 'Auswählen, ordnen und rechnen' },
+    type: { name: 'Selber tippen', icon: 'pencil', hint: 'Formeln selbst eintippen' },
+    review: { name: 'Wiederholung', icon: 'repeat', hint: 'Alles bisher gemischt' },
+    exam: { name: 'Probeklausur', icon: 'trophy', hint: 'Wie in der Klausur, mit Zeit' },
+  };
+  function pathOf(s) {
+    if (s._path) return s._path;
+    const L = [];
+    s.topics.forEach((t, i) => {
+      ['choose', 'mixed', 'type'].forEach((k, j) => L.push({ id: t.id + ':' + (j + 1), kind: k, topic: t.id, title: t.title, color: colorOf(t) }));
+      if (i % 2 === 1 || i === s.topics.length - 1) L.push({ id: s.id + ':mix' + (i + 1), kind: 'review', upto: i, title: 'Wiederholung', color: '#5B6B8C' });
+    });
+    (s.exams || []).forEach((k) => L.push({ id: 'exam:' + k.id, kind: 'exam', exam: k.id, title: k.title, color: '#1F2A44' }));
+    L.forEach((l, i) => { l.n = i + 1; l.subject = s.id; l.i = i; });
+    return (s._path = L);
+  }
+  const levelById = (id) => { for (const s of SUBJECTS) { const l = pathOf(s).find((x) => x.id === id); if (l) return l; } return null; };
+  const levelDone = (l) => !!(P.levels[l.id] && P.levels[l.id].stars);
+  function currentIndex(s) { const L = pathOf(s); const i = L.findIndex((l) => !levelDone(l)); return i < 0 ? L.length - 1 : i; }
+  const levelsDone = () => Object.values(P.levels).filter((x) => x.stars).length;
+  const totalStars = () => Object.values(P.levels).reduce((a, x) => a + (x.stars || 0), 0);
+  const starsFor = (ok, n) => { const r = n ? ok / n : 0; return r >= 0.9 ? 3 : r >= 0.6 ? 2 : 1; };
+
+  // ---------- Auswahl-Aufgaben aus Formel-Aufgaben: richtige Formel + typische falsche ----------
+  const CHOICE = new Map();
+  const normF = (f) => String(f).replace(/\s+/g, '').toUpperCase();
+  function genericVariants(ex) {
+    const out = [];
+    let sol;
+    try { sol = XL.compile(ex.solution); } catch (e) { return out; }
+    const variant = (fn) => { try { const c = XL.cloneAst(sol); if (fn(c)) out.push(XL.toFormula(c)); } catch (e) { /* überspringen */ } };
+    const swapFn = { SUMME: 'MITTELWERT', MITTELWERT: 'SUMME', MAX: 'MIN', MIN: 'MAX', ANZAHL: 'SUMME', ANZAHL2: 'ANZAHL', 'ZÄHLENWENN': 'SUMMEWENN', SUMMEWENN: 'ZÄHLENWENN' };
+    // Funktion verwechselt
+    variant((c) => { let ch = false; XL.walk(c, (n) => { if (!ch && n.k === 'fn' && swapFn[XL.canonicalFn(n.name)]) { n.name = swapFn[XL.canonicalFn(n.name)]; ch = true; } }); return ch; });
+    // Rechenzeichen vertauscht
+    variant((c) => { let ch = false; const sw = { '+': '-', '-': '+', '*': '/', '/': '*' }; XL.walk(c, (n) => { if (!ch && n.k === 'bin' && sw[n.op]) { n.op = sw[n.op]; ch = true; } }); return ch; });
+    // % vergessen
+    variant((c) => { let ch = false; XL.walk(c, (n) => { if (n.k === 'bin') for (const side of ['l', 'r']) if (!ch && n[side].k === 'pct') { n[side] = n[side].e; ch = true; } }); return ch; });
+    // Nachbarzelle statt der richtigen
+    variant((c) => { let ch = false; XL.walk(c, (n) => { if (!ch && n.k === 'ref') { n.r.col += 1; ch = true; } }); return ch; });
+    // Bereich um eine Zeile verrutscht
+    variant((c) => { let ch = false; XL.walk(c, (n) => { if (!ch && n.k === 'range') { n.a.row += 1; n.b.row += 1; ch = true; } }); return ch; });
+    // alle Bezüge mit $
+    variant((c) => {
+      let ch = false;
+      XL.walk(c, (n) => {
+        if (n.k === 'ref' && !(n.r.absC && n.r.absR)) { n.r.absC = n.r.absR = true; ch = true; }
+        if (n.k === 'range') for (const p of [n.a, n.b]) if (!(p.absC && p.absR)) { p.absC = p.absR = true; ch = true; }
+      });
+      return ch;
+    });
+    return out;
+  }
+  function distractors(ex, k) {
+    const seen = new Set([normF(ex.solution)]);
+    const out = [];
+    const usedMid = new Set();
+    const cands = [];
+    for (const m of Checker.mutants(ex)) {
+      // „mal 100“ nur bei echten Prozent-Rechnungen (Anteil mit / oder %)
+      if (m.mid === 'prozent' && !(ex._topic === 'prozent' && /[/%]/.test(ex.solution))) continue;
+      try { cands.push({ f: XL.toFormula(m.ast), mid: m.mid, why: m.hint }); } catch (e) { /* überspringen */ }
+    }
+    for (const f of genericVariants(ex)) cands.push({ f });
+    // erst je Fehlerart einer, dann auffüllen
+    for (const pass of [0, 1]) {
+      for (const c of cands) {
+        if (out.length >= k) break;
+        const nf = normF(c.f);
+        if (seen.has(nf) || (pass === 0 && c.mid && usedMid.has(c.mid))) continue;
+        let r;
+        try { r = Checker.checkFormula(ex, c.f, { attempt: 2 }); } catch (e) { continue; }
+        if (!r || r.status === 'richtig' || r.status === 'syntax' || r.status === 'leer') { seen.add(nf); continue; }
+        seen.add(nf);
+        const mid = c.mid || (r.mids || [])[0] || null;
+        if (mid) usedMid.add(mid);
+        out.push({ f: c.f, mid, why: c.why || (r.msgs || [])[0] || '' });
+      }
+    }
+    return out;
+  }
+  // n = Anzahl der Antworten (3 oder 4)
+  function asChoice(ex, n) {
+    const id = ex.id + '~w' + n;
+    if (CHOICE.has(id)) return CHOICE.get(id);
+    const d = distractors(ex, n - 1);
+    const item = d.length < 2 ? null : {
+      id, type: 'wahl', choose: true, _topic: ex._topic, prompt: ex.prompt, sheet: ex.sheet, target: ex.target, fill: ex.fill, diagram: ex.diagram, explain: ex.explain,
+      options: [{ f: ex.solution, ok: true }].concat(d.map((x) => ({ f: x.f, ok: false, mid: x.mid, why: x.why }))),
+    };
+    CHOICE.set(id, item);
+    return item;
+  }
+  // Aufgaben eines Levels
+  function levelItems(l) {
+    if (l.kind === 'review') {
+      const s = subjectById(l.subject);
+      const t0 = today();
+      const pool = s.topics.slice(0, l.upto + 1).flatMap((t) => t.exercises.filter((e) => e.type === 'formel'));
+      // fällige und unsichere zuerst, Klausurthemen etwas häufiger
+      const w = pool.map((e) => { const it = P.items[e.id]; const due = it && it.due <= t0; return { e, k: Math.random() * (topicById(e._topic).focus ? 1.5 : 1) * (due ? 3 : 1) * (6 - box(e.id)) }; });
+      w.sort((a, b) => b.k - a.k);
+      const typed = interleave(w.slice(0, 5).map((x) => x.e));
+      const extra = w.slice(5).map((x) => asChoice(x.e, 4)).filter(Boolean).slice(0, 1);
+      return typed.concat(extra);
+    }
+    const t = topicById(l.topic);
+    const ex = t.exercises;
+    const formel = ex.filter((e) => e.type === 'formel');
+    const wahl = ex.filter((e) => e.type === 'wahl');
+    const other = ex.filter((e) => ['ergebnis', 'ordnen', 'karte'].includes(e.type));
+    const nW = Math.min(3, wahl.length);
+    const nF1 = Math.max(0, 5 - nW);
+    if (l.kind === 'choose') {
+      const items = wahl.slice(0, nW).concat(formel.slice(0, nF1 + 2).map((e) => asChoice(e, 3)).filter(Boolean).slice(0, nF1));
+      return items.length ? items : wahl.concat(other).slice(0, 5);
+    }
+    if (l.kind === 'mixed') {
+      const rest = formel.slice(nF1).concat(formel.slice(0, nF1));
+      const mc = rest.map((e) => asChoice(e, 4)).filter(Boolean);
+      const base = other.concat(wahl.slice(nW));
+      return shuffle(base.slice(0, 3).concat(mc.slice(0, Math.max(2, 5 - Math.min(3, base.length)))));
+    }
+    // selber tippen: die unsichersten zuerst
+    const order = formel.map((e, i) => ({ e, i })).sort((a, b) => box(a.e.id) - box(b.e.id) || a.i - b.i).map((x) => x.e);
+    return order.slice(0, 5);
   }
 
   // =====================================================================
@@ -102,30 +221,20 @@
     while (P.goalDays[d]) { n++; d = addDays(d, -1); }
     return n;
   }
-  const TIER_NAME = { bronze: 'Bronze', silver: 'Silber', gold: 'Gold' };
-  const TIER_RANK = { bronze: 1, silver: 2, gold: 3 };
-  const tierOf = (m) => (m >= 100 ? 'gold' : m >= 65 ? 'silver' : m >= 30 ? 'bronze' : null);
-  function nextTierInfo(m) {
-    if (m >= 100) return null;
-    const [need, name] = m < 30 ? [30, 'Bronze'] : m < 65 ? [65, 'Silber'] : [100, 'Gold'];
-    return { need, name, left: need - m };
-  }
-  // „gleich richtig“ = beim ersten Versuch richtig
   const MEDALS = [
     { id: 'start', name: 'Los geht’s', desc: 'Erste Aufgabe gelöst', color: 'green', glyph: 'check', test: () => P.stats.answered >= 1 },
+    { id: 'lvl1', name: 'Level 1', desc: 'Erstes Level geschafft', color: 'blue', glyph: '1', test: () => levelsDone() >= 1 },
+    { id: 'lvl10', name: '10 Level', desc: '10 Level geschafft', color: 'blue', glyph: '10', test: () => levelsDone() >= 10 },
+    { id: 'lvlall', name: 'Ziel', desc: 'Alle Level eines Fachs', color: 'gold', glyph: 'trophy', test: () => SUBJECTS.some((s) => pathOf(s).every(levelDone)) },
+    { id: 'perfekt', name: 'Perfekt', desc: 'Ein Level mit 3 Sternen', color: 'gold', glyph: 'star', test: () => Object.values(P.levels).some((x) => x.stars >= 3) },
+    { id: 'sterne30', name: '30 Sterne', desc: '30 Sterne gesammelt', color: 'gold', glyph: '30', test: () => totalStars() >= 30 },
     { id: 'goal', name: 'Tagesziel', desc: 'Tagesziel geschafft', color: 'green', glyph: 'target', test: () => Object.keys(P.goalDays).length >= 1 },
-    { id: 'r10', name: '10 richtig', desc: '10 Aufgaben gleich richtig', color: 'blue', glyph: '10', test: () => P.stats.correct >= 10 },
-    { id: 'r50', name: '50 richtig', desc: '50 Aufgaben gleich richtig', color: 'blue', glyph: '50', test: () => P.stats.correct >= 50 },
-    { id: 'r150', name: '150 richtig', desc: '150 Aufgaben gleich richtig', color: 'purple', glyph: '150', test: () => P.stats.correct >= 150 },
     { id: 's3', name: '3 Tage', desc: '3 Tage in Folge', color: 'orange', glyph: '3', streak: true, test: () => P.best >= 3 },
     { id: 's7', name: '7 Tage', desc: '7 Tage in Folge', color: 'orange', glyph: '7', streak: true, test: () => P.best >= 7 },
-    { id: 's14', name: '14 Tage', desc: '14 Tage in Folge', color: 'red', glyph: '14', streak: true, test: () => P.best >= 14 },
     { id: 'combo', name: 'Zehn am Stück', desc: '10 hintereinander gleich richtig', color: 'purple', glyph: 'star', test: () => P.stats.bestCombo >= 10 },
     { id: 'fix', name: 'Fehlerjäger', desc: '10 alte Fehler verbessert', color: 'red', glyph: 'repeat', test: () => P.stats.fixed >= 10 },
     { id: 'video', name: 'Kino', desc: 'Alle Videos eines Fachs', color: 'blue', glyph: 'play',
       test: () => SUBJECTS.some((s) => { const v = playlistOf(s); return v.length > 0 && v.every(videoSeen); }) },
-    { id: 'fit', name: 'Klausurfit', desc: 'Klausurthemen auf Silber', color: 'gold', glyph: 'trophy',
-      test: () => SUBJECTS.some((s) => { const f = s.topics.filter((t) => t.focus); return f.length > 0 && f.every((t) => TIER_RANK[P.tiers[t.id]] >= 2); }) },
     { id: 'exam', name: 'Probeklausur', desc: 'Erste Probeklausur', color: 'green', glyph: 'exam', test: () => P.stats.examsDone >= 1 },
     { id: 'exam2', name: 'Note 2', desc: 'Probeklausur ab 81 %', color: 'silver', glyph: '2', test: () => P.stats.bestExamPct >= 81 },
     { id: 'exam1', name: 'Volltreffer', desc: 'Probeklausur mit 100 %', color: 'gold', glyph: '1', test: () => P.stats.bestExamPct >= 100 },
@@ -149,16 +258,8 @@
     P.best = Math.max(P.best || 0, streak());
   }
   // zeigt neue Belohnungen oben an – pro Ereignis nur eine Meldung
-  function checkRewards(topicId) {
+  function checkRewards() {
     const pops = [];
-    const t = topicId ? topicById(topicId) : null;
-    if (t) {
-      const tier = tierOf(mastery(t));
-      if (tier && (TIER_RANK[tier] || 0) > (TIER_RANK[P.tiers[t.id]] || 0)) {
-        P.tiers[t.id] = tier;
-        pops.push([medal({ color: tier, glyph: 'star', size: 46 }), TIER_NAME[tier] + ' in „' + t.title + '“', tier === 'gold' ? 'Thema ganz gemeistert.' : 'Weiter üben für ' + (tier === 'bronze' ? 'Silber' : 'Gold') + '.', 'Themen-Medaille']);
-      }
-    }
     let goalMedal = false;
     for (const m of MEDALS) {
       if (!P.medals[m.id] && m.test()) {
@@ -189,8 +290,7 @@
     it.last = t;
     P.items[id] = it;
     countAnswer(outcome, prev);
-    const ex = exById(id);
-    checkRewards(ex ? ex._topic : null);
+    checkRewards();
   }
   function recordMistakes(mids, exId) {
     if (!mids || !mids.length) return;
@@ -199,7 +299,8 @@
       const r = P.mistakes[m] || { n: 0, items: [] };
       r.n++;
       r.last = today();
-      if (exId && !r.items.includes(exId)) r.items.push(exId);
+      const base = exId ? String(exId).split('~')[0] : null;
+      if (base && EXS.has(base) && !r.items.includes(base)) r.items.push(base);
       P.mistakes[m] = r;
     }
     saveP();
@@ -218,10 +319,20 @@
     P.vseen = Object.assign({}, P.vseen, { [e.video]: true });
     if (e.topic) P.seen[e.topic] = Object.assign({}, P.seen[e.topic], { video: true });
     saveP();
-    checkRewards(null);
+    checkRewards();
   }
-  function markSeen(tid, key) { P.seen[tid] = Object.assign({}, P.seen[tid], { [key]: true }); saveP(); if (key === 'video') checkRewards(null); }
+  function markSeen(tid, key) { P.seen[tid] = Object.assign({}, P.seen[tid], { [key]: true }); saveP(); }
 
+  // Sterne (gefüllt/leer) als kleine Grafik
+  function stars(n, size) {
+    const w = el('span', { class: 'stars', 'aria-label': n + ' von 3 Sternen' });
+    for (let i = 0; i < 3; i++) {
+      const s = el('span', { class: 'star' + (i < n ? ' on' : ''), style: { width: size + 'px', height: size + 'px' } });
+      s.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 2.8l2.8 5.8 6.3.9-4.6 4.4 1.1 6.3L12 17.2l-5.6 3 1.1-6.3L2.9 9.5l6.3-.9z"/></svg>';
+      w.appendChild(s);
+    }
+    return w;
+  }
   // Wochenleiste: Mo–So, Tagesziel erreicht = gefüllt
   function weekStrip() {
     const now = new Date(today() + 'T12:00:00');
@@ -237,22 +348,14 @@
         el('span', { class: 'wname', text: n }));
     }));
   }
-  function goalRing(size) {
-    const c = countOn(today()), g = goal();
-    const pct = Math.min(100, Math.round(100 * c / g));
-    const r = (size - 10) / 2, circ = 2 * Math.PI * r;
-    const w = el('span', { class: 'goal-ring', style: { width: size + 'px', height: size + 'px' } });
-    w.innerHTML = `<svg viewBox="0 0 ${size} ${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" class="gr-bg"/><circle cx="${size / 2}" cy="${size / 2}" r="${r}" class="gr-fg" stroke-dasharray="${circ}" stroke-dashoffset="${circ * (1 - pct / 100)}" transform="rotate(-90 ${size / 2} ${size / 2})"/></svg>`;
-    w.appendChild(el('span', { class: 'gr-text' }, el('b', { text: Math.min(c, g) + '/' + g, style: { fontSize: Math.round(size * 0.22) + 'px' } }), el('small', { text: 'heute' })));
-    return w;
-  }
 
   // =====================================================================
   // Rahmen und Navigation
   // =====================================================================
   function screen(opts, ...content) {
+    closeMenu();
     app.innerHTML = '';
-    app.className = (opts.cls || '') + (opts.nav === false ? ' no-nav' : '');
+    app.className = opts.cls || '';
     const top = el('header', { class: 'top' + (opts.color ? ' colored' : ''), style: opts.color ? { background: opts.color } : null });
     if (opts.back) top.appendChild(el('button', { class: 'icon-btn', 'aria-label': 'Zurück', onclick: () => go(opts.back) }, icon('back')));
     top.appendChild(el('div', { class: 'top-title' }, el('h1', { text: opts.title || 'Lernapp' }), opts.sub ? el('div', { class: 'top-sub', text: opts.sub }) : null));
@@ -261,16 +364,8 @@
     put(main, ...content);
     if (opts.title !== null) app.appendChild(top);
     app.appendChild(main);
-    if (opts.nav !== false) app.appendChild(bottomNav(opts.nav));
     window.scrollTo(0, 0);
     return main;
-  }
-  function bottomNav(active) {
-    const item = (hash, ic, label, key) => el('a', { href: hash, class: 'nav-item' + (active === key ? ' active' : '') }, icon(ic), el('span', { text: label }));
-    const due = dueList().length;
-    const rep = item('#/wiederholen', 'repeat', 'Wiederholen', 'rep');
-    if (due) rep.appendChild(el('i', { class: 'badge', text: String(due) }));
-    return el('nav', { class: 'bottom' }, item('#/', 'home', 'Start', 'home'), rep, item('#/erfolge', 'trophy', 'Erfolge', 'win'));
   }
   function go(hash) { if (location.hash === hash) route(); else location.hash = hash; }
   window.addEventListener('hashchange', () => route());
@@ -282,201 +377,182 @@
       stopExamTimer();
       examState = null;
     }
-    const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-    if (!parts.length) return viewHome();
+    const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+    if (!parts.length) return viewPath();
     const [a, b, c] = parts;
+    if (a === 'level' && b) { const l = levelById(b); return l ? startLevel(l) : viewPath(); }
     if (a === 'f' && b) {
       const s = subjectById(b);
-      if (!s) return viewHome();
+      if (!s) return viewPath();
       if (c === 'klausur') return viewExams(s);
       if (c === 'fehler') return viewMistakes(s);
       if (c === 'videos') return viewVideos(s);
-      return viewSubject(s);
+      return viewThemen(s);
     }
+    if (a === 'themen') return viewThemen(curSubject());
     if (a === 't' && b) {
       const t = topicById(b);
-      if (!t) return viewHome();
+      if (!t) return viewPath();
       if (c === 'lernen') return viewCards(t);
       if (c === 'beispiel') return viewExample(t);
       if (c === 'ueben') return startTopicPractice(t);
       if (c === 'fehler') return viewTopicMistakes(t);
       return viewTopic(t);
     }
-    if (a === 'wiederholen') return viewReview();
     if (a === 'erfolge') return viewRewards();
     if (a === 'faecher') return viewPicker();
     if (a === 'klausur' && b) return viewExamStart(b);
     if (a === 'einstellungen') return viewSettings();
-    if (a === 'session') return session ? renderSession() : viewHome();
-    return viewHome();
+    if (a === 'session') return session ? renderSession() : viewPath();
+    return viewPath();
+  }
+
+  // ---------- Menü (alles, was nicht zum Level-Weg gehört) ----------
+  let menuEl = null;
+  function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
+  function openMenu() {
+    closeMenu();
+    const s = curSubject();
+    const row = (ic, label, hash) => el('a', { class: 'menu-row', href: hash, onclick: () => closeMenu() }, icon(ic), el('span', { text: label }), icon('chev', 'chev'));
+    const others = mySubjects().filter((x) => x.id !== s.id);
+    const sheet = el('div', { class: 'menu-sheet', role: 'dialog', 'aria-label': 'Menü' },
+      el('div', { class: 'menu-grab' }),
+      row('list', 'Themen-Übersicht', '#/themen'),
+      row('play', 'Alle Videos', '#/f/' + s.id + '/videos'),
+      row('exam', 'Probeklausur', '#/f/' + s.id + '/klausur'),
+      row('alert', 'Häufige Fehler', '#/f/' + s.id + '/fehler'),
+      row('trophy', 'Erfolge', '#/erfolge'),
+      others.map((x) => el('button', { class: 'menu-row', onclick: () => { P.cur = x.id; saveP(); closeMenu(); go('#/'); } }, icon('grid'), el('span', { text: 'Fach wechseln: ' + x.name }), icon('chev', 'chev'))),
+      row('gear', 'Einstellungen', '#/einstellungen'));
+    menuEl = el('div', { class: 'menu-ov', onclick: (e) => { if (e.target === menuEl) closeMenu(); } }, sheet);
+    document.body.appendChild(menuEl);
+    requestAnimationFrame(() => menuEl && menuEl.classList.add('show'));
   }
 
   // =====================================================================
-  // Start
+  // Start = der Level-Weg
   // =====================================================================
-  function nextStep() {
-    const due = dueList();
-    if (due.length >= 3) return { title: 'Wiederholen', sub: due.length + ' Aufgaben sind fällig', color: '#2F7DE1', run: () => startSession(interleave(due).slice(0, 12), 'Wiederholen', '#/') };
-    const open = (t) => {
-      const s = subjectById(t._subject);
-      const seen = P.seen[t.id] || {};
-      if (hasVideo(t) && !seen.video) return { title: t.title, sub: s.name + ' · Video ansehen', color: colorOf(t), run: () => { P.last = t.id; saveP(); playVideo(topicVideo(t)); } };
-      if (!seen.cards) return { title: t.title, sub: s.name + ' · Erklärung lesen', color: colorOf(t), run: () => go('#/t/' + t.id + '/lernen') };
-      return { title: t.title, sub: s.name + ' · Üben', color: colorOf(t), run: () => go('#/t/' + t.id + '/ueben') };
-    };
-    const last = P.last && topicById(P.last);
-    if (last && mySubjects().some((s) => s.id === last._subject) && mastery(last) < 100) return open(last);
-    const topics = myTopics().filter((t) => mastery(t) < 100);
-    const focus = topics.filter((t) => t.focus).sort((x, y) => mastery(x) - mastery(y));
-    if (focus.length) return open(focus[0]);
-    if (topics.length) return open(topics[0]);
-    if (due.length) return { title: 'Wiederholen', sub: due.length + ' Aufgaben sind fällig', color: '#2F7DE1', run: () => startSession(interleave(due).slice(0, 12), 'Wiederholen', '#/') };
-    const s = mySubjects()[0];
-    return { title: 'Probeklausur', sub: 'Alles geübt – teste dich wie in der Klausur', color: '#1B2430', run: () => go('#/f/' + s.id + '/klausur') };
-  }
-  function viewHome() {
-    const h = new Date().getHours();
-    const greet = h < 11 ? 'Guten Morgen' : h < 18 ? 'Hallo' : 'Guten Abend';
-    const dateTxt = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
-    const s = streak();
-    const head = el('div', { class: 'home-head' },
-      el('div', null, el('h1', { class: 'hello', text: greet }), el('div', { class: 'muted small', text: dateTxt })),
-      el('button', { class: 'icon-btn', 'aria-label': 'Einstellungen', onclick: () => go('#/einstellungen') }, icon('gear')));
-    const daily = el('a', { class: 'card daily', href: '#/erfolge' },
-      goalRing(76),
-      el('div', { class: 'daily-text' },
-        el('div', { class: 'streak-line' }, icon('flame', 'flame' + (s ? ' on' : '')), el('b', { text: String(s) }), el('span', { text: s === 1 ? 'Tag in Folge' : 'Tage in Folge' })),
-        weekStrip()));
-    const n = nextStep();
-    const cont = el('section', { class: 'card next', style: { '--c': n.color } },
-      el('div', { class: 'eyebrow', text: 'Weiter lernen' }),
-      el('div', { class: 'next-title', text: n.title }),
-      el('div', { class: 'muted small', text: n.sub }),
-      el('button', { class: 'btn primary block', style: { background: n.color }, onclick: n.run }, 'Los geht’s'));
-    const subjects = el('section', { class: 'subjects' },
-      el('div', { class: 'row-head' }, el('h2', { text: 'Deine Fächer' }), el('a', { class: 'link-sm', href: '#/faecher', text: 'Fächer wählen' })));
-    for (const sub of mySubjects()) {
-      const m = subjectMastery(sub);
-      const tiers = { gold: 0, silver: 0, bronze: 0 };
-      sub.topics.forEach((t) => { const x = P.tiers[t.id]; if (x) tiers[x]++; });
-      const kd = daysUntil((P.settings.examDates || {})[sub.id]);
-      const pill = kd === null || kd < 0 ? null : el('span', { class: 'sc-pill', text: kd === 0 ? 'Klausur heute' : kd === 1 ? 'Klausur morgen' : 'Klausur in ' + kd + ' Tagen' });
-      subjects.appendChild(el('a', { class: 'subject-card', href: '#/f/' + sub.id, style: { background: sub.color } },
-        el('div', { class: 'sc-top' }, el('div', null, el('b', { class: 'sc-name', text: sub.name }), el('div', { class: 'sc-sub', text: sub.sub }), pill), icon('chev')),
-        el('div', { class: 'sc-bar' }, el('i', { style: { width: m + '%' } })),
-        el('div', { class: 'sc-foot' }, el('span', { text: m + ' % geschafft' }),
-          el('span', { class: 'sc-medals' }, ['gold', 'silver', 'bronze'].map((k) => el('span', { class: 'sc-m' }, medal({ color: k, size: 16 }), String(tiers[k])))))));
-    }
-    const tip = (!P.tips.install && !navigator.standalone && !window.matchMedia('(display-mode: standalone)').matches)
-      ? el('div', { class: 'tip-line' }, el('a', { href: '#/einstellungen', text: 'Tipp: Lernapp als App aufs Handy legen' }),
-        el('button', { class: 'icon-btn small', 'aria-label': 'Tipp ausblenden', onclick: (e) => { P.tips.install = true; saveP(); e.currentTarget.parentNode.remove(); } }, icon('close')))
-      : null;
-    screen({ title: null, nav: 'home', cls: 'home' }, head, daily, cont, subjects, tip);
-  }
-
-  // =====================================================================
-  // Fächer wählen
-  // =====================================================================
-  function viewPicker() {
-    const sel = new Set(P.subjects || SUBJECTS.map((s) => s.id));
-    const list = el('div', { class: 'picker' });
-    const draw = () => {
-      list.innerHTML = '';
-      for (const s of SUBJECTS) {
-        const on = sel.has(s.id);
-        list.appendChild(el('button', { class: 'pick' + (on ? ' on' : ''), style: { '--c': s.color }, onclick: () => { if (on) sel.delete(s.id); else sel.add(s.id); draw(); } },
-          el('span', { class: 'pick-dot' }), el('span', { class: 'pick-text' }, el('b', { text: s.name }), el('span', { class: 'small muted', text: s.sub })),
-          el('span', { class: 'pick-check' }, on ? icon('check') : null)));
+  function viewPath() {
+    const s = curSubject();
+    const L = pathOf(s);
+    const cur = currentIndex(s);
+    const st = streak();
+    const g = goal(), c = Math.min(countOn(today()), g);
+    const bar = el('div', { class: 'path-top' },
+      el('a', { class: 'pt-streak' + (st ? ' on' : ''), href: '#/erfolge', 'aria-label': st + ' Tage in Folge' }, icon('flame'), el('b', { text: String(st) })),
+      el('div', { class: 'pt-title' }, el('b', { text: s.name }), el('span', { class: 'pt-goal' }, el('i', { style: { width: Math.round(100 * c / g) + '%' } })),
+        el('span', { class: 'pt-goal-txt', text: c >= g ? 'Tagesziel geschafft' : 'Heute ' + c + ' von ' + g })),
+      el('button', { class: 'icon-btn', 'aria-label': 'Menü', onclick: openMenu }, icon('menu')));
+    const path = el('div', { class: 'path' });
+    let lastGroup = null;
+    L.forEach((l, i) => {
+      const group = l.topic || l.kind;
+      if (group !== lastGroup) {
+        lastGroup = group;
+        const t = l.topic ? topicById(l.topic) : null;
+        if (t) path.appendChild(el('div', { class: 'path-head', style: { '--c': l.color } }, el('b', { text: t.title }), t.focus ? el('span', { class: 'ph-chip', text: 'Klausur' }) : null));
+        else if (l.kind === 'exam') path.appendChild(el('div', { class: 'path-head', style: { '--c': l.color } }, el('b', { text: 'Probeklausuren' })));
       }
-    };
-    draw();
-    screen({ title: 'Fächer wählen', back: '#/', nav: false },
-      el('p', { class: 'muted', text: 'Wähle die Fächer, die auf deinem Startbildschirm stehen sollen. Neue Fächer kommen nach und nach dazu.' }),
-      list,
-      el('button', { class: 'btn primary block', onclick: () => {
-        if (!sel.size) { toast('Wähle mindestens ein Fach.'); return; }
-        // alle gewählt = null: dann erscheinen später neue Fächer von selbst
-        P.subjects = sel.size === SUBJECTS.length ? null : SUBJECTS.filter((s) => sel.has(s.id)).map((s) => s.id);
-        saveP();
-        go('#/');
-      } }, 'Fertig'));
+      const done = levelDone(l), isCur = i === cur, locked = !done && i > cur;
+      const x = Math.round(Math.sin(i * 1.15) * 62);
+      const node = el('button', {
+        class: 'lvl' + (done ? ' done' : '') + (isCur ? ' cur' : '') + (locked ? ' locked' : ''), style: { '--c': l.color, '--x': x + 'px' },
+        'aria-label': 'Level ' + l.n + ': ' + (l.topic ? l.title + ' – ' : '') + KIND[l.kind].name + (locked ? ' (gesperrt)' : ''),
+        onclick: () => (locked ? toast('Erst Level ' + (cur + 1) + ' schaffen.') : go('#/level/' + encodeURIComponent(l.id))),
+      },
+      isCur ? el('span', { class: 'lvl-bubble' }, el('b', { text: 'Level ' + l.n }), el('span', { text: KIND[l.kind].name })) : null,
+      el('span', { class: 'lvl-dot' }, icon(locked ? 'lock' : KIND[l.kind].icon)),
+      done ? stars(P.levels[l.id].stars, 18) : isCur ? null : el('span', { class: 'lvl-n', text: KIND[l.kind].name }));
+      path.appendChild(node);
+    });
+    const L0 = L[cur];
+    const allDone = L.every(levelDone);
+    const label = allDone ? 'Alles geschafft – nochmal üben' : (levelsDone() ? 'Weiter: Level ' : 'Los geht’s: Level ') + L0.n;
+    const startBar = el('div', { class: 'start-bar' },
+      el('button', { class: 'btn primary block start-btn', style: { background: L0.color }, onclick: () => go('#/level/' + encodeURIComponent(L0.id)) },
+        el('span', null, el('b', { text: label }), el('small', { text: (L0.topic ? L0.title + ' · ' : '') + KIND[L0.kind].name }))));
+    screen({ title: null, cls: 'path-page' }, bar, path, startBar);
+    requestAnimationFrame(() => { const n = app.querySelector('.lvl.cur'); if (n) n.scrollIntoView({ block: 'center' }); });
+  }
+
+  // ---------- Level starten (bei neuem Thema erst das Video anbieten) ----------
+  function startLevel(l, opts) {
+    opts = opts || {};
+    if (l.kind === 'exam') { go('#/klausur/' + l.exam); return; }
+    const t = l.topic ? topicById(l.topic) : null;
+    if (!opts.skipIntro && l.kind === 'choose' && t && hasVideo(t) && !(P.seen[t.id] || {}).video && !(P.seen[t.id] || {}).intro) return viewLevelIntro(l);
+    const items = levelItems(l);
+    if (!items.length) { toast('Für dieses Level gibt es noch keine Aufgaben.'); go('#/'); return; }
+    startSession(items, 'Level ' + l.n, '#/', t, l);
+  }
+  function viewLevelIntro(l) {
+    const t = topicById(l.topic);
+    const s = subjectById(l.subject);
+    const ventry = (s.playlist || []).find((e) => e.topic === t.id);
+    const go2 = () => { markSeen(t.id, 'intro'); startLevel(l, { skipIntro: true }); };
+    screen({ title: 'Level ' + l.n, sub: t.title, back: '#/', color: colorOf(t), cls: 'intro' },
+      el('section', { class: 'card intro-card', style: { '--c': colorOf(t) } },
+        el('span', { class: 'intro-ic' }, icon('play')),
+        el('div', { class: 'eyebrow', text: 'Neues Thema' }),
+        el('h2', { text: t.title }),
+        el('p', { class: 'muted', text: 'Schau dir zuerst das kurze Video an. Danach geht es direkt mit dem Level los.' })),
+      el('button', { class: 'btn primary block', style: { background: colorOf(t) }, onclick: () => playVideo(topicVideo(t), null, go2) }, icon('play'),
+        'Video ansehen' + (ventry && ventry.sec ? ' (' + fmtDur(ventry.sec).replace(' Min.', '') + ')' : '')),
+      el('button', { class: 'btn ghost block', onclick: go2 }, 'Ohne Video starten'));
   }
 
   // =====================================================================
-  // Fach
+  // Themen-Übersicht (im Menü)
   // =====================================================================
-  function viewSubject(s) {
-    const date = (P.settings.examDates || {})[s.id];
-    const kd = daysUntil(date);
-    const dateInput = el('input', { type: 'date', class: 'date-hidden', value: date || '', 'aria-label': 'Klausurdatum' });
-    dateInput.addEventListener('change', () => { P.settings.examDates = Object.assign({}, P.settings.examDates, { [s.id]: dateInput.value || null }); saveP(); route(); });
-    const examLine = el('button', { class: 'exam-line', type: 'button', style: { '--c': s.color } }, icon('clock'),
-      el('span', { class: 'el-text', text: kd === null || kd < 0 ? 'Klausurdatum eintragen' : kd > 1 ? 'Klausur in ' + kd + ' Tagen' : kd === 1 ? 'Klausur ist morgen' : 'Klausur ist heute' }),
-      el('span', { class: 'small muted', text: kd === null || kd < 0 ? '' : 'ändern' }),
-      dateInput);
-    examLine.addEventListener('click', () => {
-      try { if (dateInput.showPicker) { dateInput.showPicker(); return; } } catch (e) { /* ältere Browser */ }
-      dateInput.focus();
-      dateInput.click();
-    });
+  function topicStars(t) {
+    const s = subjectById(t._subject);
+    const ls = pathOf(s).filter((l) => l.topic === t.id);
+    return { got: ls.reduce((a, l) => a + ((P.levels[l.id] || {}).stars || 0), 0), max: ls.length * 3, levels: ls };
+  }
+  function viewThemen(s) {
     const list = el('section', { class: 'topic-list' });
     for (const t of s.topics) {
-      const m = mastery(t);
-      const tier = P.tiers[t.id] || tierOf(m);
+      const ts = topicStars(t);
       list.appendChild(el('a', { class: 'topic-row', href: '#/t/' + t.id },
-        medal({ color: tier || 'gold', locked: !tier, glyph: 'star', size: 34 }),
+        el('span', { class: 'tr-dot', style: { background: colorOf(t) } }),
         el('span', { class: 'tr-text' }, el('b', { text: t.title }),
-          el('span', { class: 'tr-sub' }, t.focus ? el('span', { class: 'chip', style: { '--c': s.color }, text: 'Klausur' }) : null, el('span', { class: 'small muted', text: m + ' %' }))),
+          el('span', { class: 'tr-sub' }, t.focus ? el('span', { class: 'chip', style: { '--c': s.color }, text: 'Klausur' }) : null,
+            el('span', { class: 'small muted', text: '★ ' + ts.got + ' von ' + ts.max }))),
         icon('chev', 'chev')));
     }
-    const pl = playlistOf(s);
-    const seenN = pl.filter(videoSeen).length;
-    const mins = Math.round(pl.reduce((a, e) => a + (e.sec || 0), 0) / 60);
-    const vcard = pl.length > 1 ? el('a', { class: 'video-card', href: '#/f/' + s.id + '/videos', style: { '--c': s.color } },
-      el('span', { class: 'vc-ic' }, icon('play')),
-      el('span', { class: 'vc-text' }, el('b', { text: 'Alle Formeln erklärt' }),
-        el('span', { class: 'small muted', text: pl.length + ' Videos' + (mins ? ' · ca. ' + mins + ' Min.' : '') + (seenN ? ' · ' + seenN + ' gesehen' : '') })),
-      icon('chev', 'chev')) : null;
-    screen({ title: s.name, sub: s.sub, back: '#/', color: s.color, nav: 'home' },
-      examLine, vcard,
-      el('div', { class: 'two-btns', style: { '--c': s.color } },
-        el('a', { class: 'big-btn', href: '#/f/' + s.id + '/klausur' }, icon('exam'), el('b', { text: 'Probeklausur' })),
-        el('a', { class: 'big-btn', href: '#/f/' + s.id + '/fehler' }, icon('alert'), el('b', { text: 'Häufige Fehler' }))),
-      el('h2', { text: 'Themen' }), list);
+    screen({ title: 'Themen', sub: s.name, back: '#/', color: s.color },
+      el('p', { class: 'muted', text: 'Hier kannst du ein Thema gezielt anschauen oder üben.' }), list);
   }
-
-  // =====================================================================
-  // Thema
-  // =====================================================================
   function viewTopic(t) {
-    if (P.last !== t.id) { P.last = t.id; saveP(); }
     const s = subjectById(t._subject);
     const seen = P.seen[t.id] || {};
-    const m = mastery(t);
-    const tier = P.tiers[t.id] || tierOf(m);
-    const nt = nextTierInfo(m);
+    const ts = topicStars(t);
     const ventry = (s.playlist || []).find((e) => e.topic === t.id);
-    const status = el('section', { class: 'card topic-status' },
-      medal({ color: tier || 'gold', locked: !tier, glyph: 'star', size: 58 }),
-      el('div', { class: 'ts-text' },
-        el('b', { text: tier ? TIER_NAME[tier] + '-Medaille' : 'Noch keine Medaille' }),
-        el('div', { class: 'ts-bar' }, el('i', { style: { width: m + '%', background: colorOf(t) } })),
-        el('div', { class: 'small muted', text: nt ? 'Noch ' + nt.left + ' % bis ' + nt.name : 'Thema ganz gemeistert' })));
-    const btn = (ic, label, sub, onclick, primary, done) => el('button', { class: 'action' + (primary ? ' primary' : ''), style: primary ? { background: colorOf(t) } : { '--c': colorOf(t) }, onclick },
+    const cur = currentIndex(s);
+    const levelRow = el('section', { class: 'card topic-levels' },
+      el('b', { text: 'Level in diesem Thema' }),
+      el('div', { class: 'tl-row' }, ts.levels.map((l, k) => {
+        // über die Themen-Übersicht darf man jedes Thema beginnen; innerhalb des Themas geht es Level für Level
+        const done = levelDone(l), locked = !done && l.i > cur && k > 0 && !levelDone(ts.levels[k - 1]);
+        return el('button', { class: 'tl-chip' + (locked ? ' locked' : ''), style: { '--c': colorOf(t) },
+          onclick: () => (locked ? toast('Erst Level ' + ts.levels[k - 1].n + ' schaffen.') : go('#/level/' + encodeURIComponent(l.id))) },
+        el('span', { class: 'small', text: 'Level ' + l.n }), el('b', { text: KIND[l.kind].name }), done ? stars(P.levels[l.id].stars, 14) : icon(locked ? 'lock' : KIND[l.kind].icon));
+      })));
+    const btn = (ic, label, sub, onclick, done) => el('button', { class: 'action', style: { '--c': colorOf(t) }, onclick },
       el('span', { class: 'act-ic' }, icon(ic)), el('span', { class: 'act-text' }, el('b', { text: label }), el('span', { class: 'small', text: sub })),
       done ? el('span', { class: 'act-done' }, icon('check')) : icon('chev', 'chev'));
-    const actions = el('section', { class: 'actions' },
-      hasVideo(t) ? btn('play', 'Video ansehen', 'Erklärvideo' + (ventry && ventry.sec ? ' · ' + fmtDur(ventry.sec) : ''), () => playVideo(topicVideo(t)), false, seen.video) : null,
-      btn('book', 'Erklärung', t.cards.length + ' Merkkarten + Beispiel', () => go('#/t/' + t.id + '/lernen'), false, seen.cards && seen.example),
-      btn('pencil', 'Üben', t.exercises.length + ' Aufgaben', () => go('#/t/' + t.id + '/ueben'), true, false));
-    screen({ title: t.title, sub: s.name, back: '#/f/' + s.id, color: colorOf(t), nav: 'home' },
-      status, actions,
-      el('a', { class: 'link-row', href: '#/t/' + t.id + '/fehler' }, icon('alert'), el('span', { text: 'Häufige Fehler (' + t.mistakes.length + ')' }), icon('chev', 'chev')));
+    screen({ title: t.title, sub: s.name, back: '#/themen', color: colorOf(t) },
+      levelRow,
+      el('section', { class: 'actions' },
+        hasVideo(t) ? btn('play', 'Video', 'Erklärvideo' + (ventry && ventry.sec ? ' · ' + fmtDur(ventry.sec) : ''), () => playVideo(topicVideo(t)), seen.video) : null,
+        btn('book', 'Erklärung', t.cards.length + ' Merkkarten + Beispiel', () => go('#/t/' + t.id + '/lernen'), seen.cards && seen.example),
+        btn('pencil', 'Frei üben', 'Alle ' + t.exercises.length + ' Aufgaben', () => go('#/t/' + t.id + '/ueben'), false),
+        btn('alert', 'Häufige Fehler', t.mistakes.length + ' typische Fehler', () => go('#/t/' + t.id + '/fehler'), false)));
   }
 
   // ---------- Video ----------
-  // e = {video, title, topic}; list = Video-Liste, dann geht es nach dem Ende von selbst weiter
-  async function playVideo(e, list) {
+  // e = {video, title, topic}; list = Video-Liste (geht danach von selbst weiter); after = nach dem Ende aufrufen
+  async function playVideo(e, list, after) {
     const info = META.videos[e.video];
     if (!info) { toast('Das Video gibt es noch nicht.'); return; }
     const overlay = el('div', { class: 'overlay video-ov' });
@@ -494,6 +570,11 @@
       const goNext = () => { clearTimeout(overlay._next); overlay.remove(); playVideo(next, list); };
       v.addEventListener('ended', () => {
         markVideo(e);
+        if (after) {
+          overlay.appendChild(el('button', { class: 'btn primary next-video', onclick: () => { clearTimeout(overlay._next); overlay.remove(); after(); } }, 'Weiter zum Level'));
+          overlay._next = setTimeout(() => { if (overlay.isConnected) { overlay.remove(); after(); } }, 2500);
+          return;
+        }
         if (!next) return;
         overlay.appendChild(el('button', { class: 'btn primary next-video', onclick: goNext }, 'Weiter: ' + next.title));
         overlay._next = setTimeout(() => { if (overlay.isConnected) goNext(); }, 4000);
@@ -509,13 +590,13 @@
   // ---------- Alle Formel-Videos eines Fachs ----------
   function viewVideos(s) {
     const pl = playlistOf(s);
-    if (!pl.length) return viewSubject(s);
+    if (!pl.length) return viewThemen(s);
     const first = pl.find((e) => !videoSeen(e)) || pl[0];
     const rows = el('section', { class: 'topic-list' }, pl.map((e, i) => el('button', { class: 'topic-row vrow', onclick: () => playVideo(e, pl) },
       el('span', { class: 'vnum' + (videoSeen(e) ? ' seen' : ''), style: { '--c': s.color } }, videoSeen(e) ? icon('check') : String(i + 1)),
       el('span', { class: 'tr-text' }, el('b', { text: e.title }), el('span', { class: 'small muted', text: fmtDur(e.sec) })),
       icon('play', 'chev'))));
-    screen({ title: 'Alle Formeln erklärt', sub: s.name, back: '#/f/' + s.id, color: s.color, nav: false },
+    screen({ title: 'Alle Videos', sub: s.name, back: '#/', color: s.color },
       el('p', { class: 'muted', text: 'Zu jeder Formel ein kurzes Video: woran du sie erkennst, wie sie aufgebaut ist, ein Beispiel und ein Kurz-Check.' }),
       el('button', { class: 'btn primary block', style: { background: s.color }, onclick: () => playVideo(first, pl) }, icon('play'),
         first === pl[0] ? 'Alle abspielen' : 'Weiter mit Video ' + (pl.indexOf(first) + 1)),
@@ -525,7 +606,7 @@
   // ---------- Erklärung: Merkkarten, dann Beispiel ----------
   function viewCards(t) {
     let i = 0;
-    const main = screen({ title: 'Erklärung', sub: t.title, back: '#/t/' + t.id, color: colorOf(t), nav: false });
+    const main = screen({ title: 'Erklärung', sub: t.title, back: '#/t/' + t.id, color: colorOf(t) });
     function draw() {
       main.innerHTML = '';
       const c = t.cards[i];
@@ -555,7 +636,7 @@
   function viewExample(t) {
     const ex = t.example;
     let i = 0;
-    const main = screen({ title: 'Beispiel', sub: ex.title, back: '#/t/' + t.id, color: colorOf(t), nav: false });
+    const main = screen({ title: 'Beispiel', sub: ex.title, back: '#/t/' + t.id, color: colorOf(t) });
     function draw() {
       main.innerHTML = '';
       const s = ex.steps[i];
@@ -568,7 +649,7 @@
         el('button', { class: 'btn ghost', disabled: i === 0, onclick: () => { i--; draw(); } }, 'Zurück'),
         i < ex.steps.length - 1
           ? el('button', { class: 'btn primary', style: { background: colorOf(t) }, onclick: () => { i++; draw(); } }, 'Weiter')
-          : el('button', { class: 'btn primary', style: { background: colorOf(t) }, onclick: () => { markSeen(t.id, 'example'); go('#/t/' + t.id + '/ueben'); } }, 'Jetzt üben'));
+          : el('button', { class: 'btn primary', style: { background: colorOf(t) }, onclick: () => { markSeen(t.id, 'example'); go('#/t/' + t.id); } }, 'Fertig'));
       put(main, card, bar, grid, nav);
     }
     draw();
@@ -587,9 +668,8 @@
   }
   function viewTopicMistakes(t) {
     const list = t.mistakes.map((id) => mistakeById(id)).filter(Boolean).map((m) => mistakeCard(m, P.mistakes[m.id] && P.mistakes[m.id].n));
-    screen({ title: 'Häufige Fehler', sub: t.title, back: '#/t/' + t.id, color: colorOf(t), nav: false },
-      el('p', { class: 'muted', text: 'Tippe auf einen Fehler, um Beispiel und Tipp zu sehen.' }), ...list,
-      el('button', { class: 'btn primary block', style: { background: colorOf(t) }, onclick: () => go('#/t/' + t.id + '/ueben') }, 'Üben'));
+    screen({ title: 'Häufige Fehler', sub: t.title, back: '#/t/' + t.id, color: colorOf(t) },
+      el('p', { class: 'muted', text: 'Tippe auf einen Fehler, um Beispiel und Tipp zu sehen.' }), ...list);
   }
   function viewMistakes(s) {
     const ids = new Set((s.mistakes || []).map((m) => m.id));
@@ -598,7 +678,7 @@
     if (mine.length) {
       parts.push(el('h2', { text: 'Deine Fehler' }));
       mine.slice(0, 6).forEach(([id, r]) => parts.push(mistakeCard(mistakeById(id), r.n)));
-      const items = [...new Set(mine.flatMap(([, r]) => r.items))].map(exById).filter(Boolean);
+      const items = [...new Set(mine.flatMap(([, r]) => r.items))].map((id) => EXS.get(id)).filter(Boolean);
       if (items.length) parts.push(el('button', { class: 'btn primary block', style: { background: s.color }, onclick: () => startSession(interleave(shuffle(items)).slice(0, 10), 'Fehler üben', '#/f/' + s.id + '/fehler') }, 'Diese Fehler üben'));
     } else {
       parts.push(el('p', { class: 'muted', text: 'Wenn dir beim Üben ein typischer Fehler passiert, steht er hier oben – mit Zähler.' }));
@@ -610,34 +690,36 @@
       parts.push(el('h3', { class: 'group-h', style: { color: colorOf(t) }, text: t.title }));
       ms.forEach((m) => parts.push(mistakeCard(m, P.mistakes[m.id] && P.mistakes[m.id].n)));
     }
-    screen({ title: 'Häufige Fehler', sub: s.name, back: '#/f/' + s.id, color: s.color, nav: false }, ...parts);
+    screen({ title: 'Häufige Fehler', sub: s.name, back: '#/', color: s.color }, ...parts);
   }
 
   // =====================================================================
-  // Üben: Runde mit mehreren Aufgaben
+  // Runde (Level oder freies Üben)
   // =====================================================================
   let session = null;
   function startTopicPractice(t) {
-    if (P.last !== t.id) { P.last = t.id; saveP(); }
-    const order = t.exercises.slice().sort((a, b) => ((P.items[a.id] || {}).box || 0) - ((P.items[b.id] || {}).box || 0));
-    const open = order.filter((e) => !P.items[e.id] || P.items[e.id].box < 5);
+    const order = t.exercises.slice().sort((a, b) => box(a.id) - box(b.id));
+    const open = order.filter((e) => box(e.id) < 5);
     startSession(open.length ? open : shuffle(order), t.title, '#/t/' + t.id, t);
   }
-  function startSession(items, title, back, topic) {
+  function startSession(items, title, back, topic, level) {
     if (!items.length) { toast('Keine Aufgaben gefunden.'); return; }
-    session = { items: items.slice(), idx: 0, title, back, topic, results: [], requeued: new Set(), mids: [] };
-    // #/t/<id>/ueben startet sofort eine Runde: ersetzen, damit „Zurück“ nicht wieder hineinführt
-    if (/\/ueben$/.test(location.hash)) { history.replaceState(null, '', '#/session'); renderSession(); }
+    session = { items: items.slice(), idx: 0, title, back, topic, level: level || null, results: [], requeued: new Set(), mids: [], first: items.length };
+    // Routen, die sofort eine Runde starten, ersetzen – sonst führt „Zurück“ wieder hinein
+    if (/\/ueben$/.test(location.hash) || location.hash.startsWith('#/level/')) { history.replaceState(null, '', '#/session'); renderSession(); }
     else if (location.hash !== '#/session') location.hash = '#/session';
     else renderSession();
   }
   function renderSession() {
     const s = session;
-    if (s.idx >= s.items.length) return renderSessionEnd();
+    if (s.idx >= s.items.length) return s.level ? renderLevelEnd() : renderSessionEnd();
     const ex = s.items[s.idx];
     const t = topicById(ex._topic) || s.topic;
-    const prog = el('div', { class: 'progress' }, el('i', { style: { width: Math.round(100 * s.idx / s.items.length) + '%', background: t ? colorOf(t) : '#2F7DE1' } }));
-    const main = screen({ title: s.title, sub: (s.idx + 1) + ' / ' + s.items.length, back: s.back, color: t ? colorOf(t) : null, nav: false, cls: 'session' });
+    const l = s.level;
+    const col = l ? l.color : t ? colorOf(t) : '#2F7DE1';
+    const prog = el('div', { class: 'progress' }, el('i', { style: { width: Math.round(100 * s.idx / s.items.length) + '%', background: col } }));
+    const sub = l ? (l.topic ? l.title + ' · ' : '') + KIND[l.kind].name : (s.idx + 1) + ' / ' + s.items.length;
+    const main = screen({ title: s.title, sub, back: s.back, color: col, cls: 'session' });
     main.appendChild(prog);
     const done = (outcome, mids) => {
       grade(ex.id, outcome);
@@ -649,29 +731,68 @@
     };
     main.appendChild(viewExercise(ex, done, t));
   }
-  function renderSessionEnd() {
-    const s = session;
+  function firstTryScore(s) {
     const firstTry = new Map();
     for (const r of s.results) if (!firstTry.has(r.id)) firstTry.set(r.id, r.outcome);
     const n = firstTry.size;
     const ok = [...firstTry.values()].filter((o) => o === 'first' || o === 'known').length;
-    const mids = [...new Set(s.mids)].map(mistakeById).filter(Boolean);
+    return { n, ok };
+  }
+  function goalLine() {
     const st = streak();
+    return el('div', { class: 'goal-line' }, el('span', { class: 'gl-flame' + (st ? ' on' : '') }, icon('flame'), el('b', { text: String(st) })),
+      el('span', { class: 'small muted', text: countOn(today()) >= goal() ? 'Tagesziel für heute geschafft.' : 'Noch ' + (goal() - countOn(today())) + (goal() - countOn(today()) === 1 ? ' Aufgabe' : ' Aufgaben') + ' bis zum Tagesziel.' }));
+  }
+  function roundMistakes(s) {
+    const mids = [...new Set(s.mids)].map(mistakeById).filter(Boolean);
+    if (!mids.length) return [];
+    return [el('h2', { text: 'Fehler in dieser Runde' })].concat(mids.map((m) => mistakeCard(m, P.mistakes[m.id] && P.mistakes[m.id].n)));
+  }
+  function renderSessionEnd() {
+    const s = session;
+    const { n, ok } = firstTryScore(s);
     const parts = [
       el('section', { class: 'card done-card' },
         el('div', { class: 'eyebrow', text: 'Runde fertig' }),
         el('div', { class: 'big', text: ok + ' von ' + n + ' richtig' }),
-        el('div', { class: 'muted small', text: 'beim ersten Versuch' })),
-      el('section', { class: 'card done-goal' }, goalRing(64),
-        el('div', null, el('div', { class: 'streak-line' }, icon('flame', 'flame' + (st ? ' on' : '')), el('b', { text: String(st) }), el('span', { text: st === 1 ? 'Tag in Folge' : 'Tage in Folge' })),
-          el('div', { class: 'small muted', text: countOn(today()) >= goal() ? 'Tagesziel für heute geschafft.' : 'Noch ' + (goal() - countOn(today())) + ' Aufgaben bis zum Tagesziel.' })))];
-    if (mids.length) {
-      parts.push(el('h2', { text: 'Fehler in dieser Runde' }));
-      mids.forEach((m) => parts.push(mistakeCard(m, P.mistakes[m.id] && P.mistakes[m.id].n)));
-    }
-    parts.push(el('div', { class: 'row-btns' }, el('button', { class: 'btn ghost', onclick: () => go(s.back) }, 'Fertig'),
-      el('button', { class: 'btn primary', onclick: () => { const items = [...new Set(s.results.map((r) => r.id))].map(exById); startSession(shuffle(items), s.title, s.back, s.topic); } }, 'Nochmal')));
-    screen({ title: s.title, back: s.back, nav: false }, ...parts);
+        el('div', { class: 'muted small', text: 'beim ersten Versuch' }), goalLine()),
+      ...roundMistakes(s),
+      el('div', { class: 'row-btns' }, el('button', { class: 'btn ghost', onclick: () => go(s.back) }, 'Fertig'),
+        el('button', { class: 'btn primary', onclick: () => { const items = [...new Set(s.results.map((r) => r.id))].map(exById).filter(Boolean); startSession(shuffle(items), s.title, s.back, s.topic); } }, 'Nochmal'))];
+    screen({ title: s.title, back: s.back }, ...parts);
+  }
+  // Ende eines Levels: Sterne, dann direkt weiter zum nächsten Level
+  function renderLevelEnd() {
+    const s = session, l = s.level;
+    const { n, ok } = firstTryScore(s);
+    const got = starsFor(ok, n);
+    const before = (P.levels[l.id] || {}).stars || 0;
+    const rec = P.levels[l.id] || { stars: 0, plays: 0 };
+    rec.stars = Math.max(rec.stars || 0, got);
+    rec.plays = (rec.plays || 0) + 1;
+    rec.last = today();
+    P.levels[l.id] = rec;
+    saveP();
+    checkRewards();
+    const L = pathOf(subjectById(l.subject));
+    const next = L[l.i + 1] || null;
+    const title = got === 3 ? 'Perfekt!' : got === 2 ? 'Gut gemacht!' : 'Geschafft!';
+    const parts = [
+      el('section', { class: 'card level-result', style: { '--c': l.color } },
+        el('div', { class: 'eyebrow', text: 'Level ' + l.n + ' · ' + KIND[l.kind].name }),
+        stars(got, 54),
+        el('div', { class: 'big', text: title }),
+        el('div', { class: 'muted', text: ok + ' von ' + n + ' beim ersten Versuch richtig' }),
+        before && got > before ? el('div', { class: 'small lr-better', text: 'Neuer Rekord für dieses Level!' }) : null,
+        got < 3 ? el('div', { class: 'small muted', text: got === 1 ? 'Ab 60 % gibt es 2 Sterne, ab 90 % 3 Sterne.' : 'Ab 90 % gibt es 3 Sterne.' }) : null,
+        goalLine()),
+      next ? el('button', { class: 'btn primary block', style: { background: next.color }, onclick: () => startLevel(next) },
+        next.kind === 'exam' ? 'Weiter: Probeklausur' : 'Weiter: Level ' + next.n) : null,
+      el('div', { class: 'row-links' },
+        el('button', { class: 'link-btn', onclick: () => startLevel(l, { skipIntro: true }) }, 'Level nochmal'),
+        el('button', { class: 'link-btn', onclick: () => go('#/') }, 'Zur Übersicht')),
+      ...roundMistakes(s)];
+    screen({ title: 'Level ' + l.n, back: '#/', color: l.color }, ...parts);
   }
 
   // ---------- eine Aufgabe ----------
@@ -692,11 +813,11 @@
   }
   function feedbackBox(r) {
     const cls = r.status === 'richtig' ? 'ok' : r.status === 'fast' ? 'warn' : 'bad';
-    const box = el('div', { class: 'feedback ' + cls, role: 'status' }, el('b', { class: 'fb-title', text: r.title || (cls === 'ok' ? 'Richtig' : 'Noch nicht richtig') }));
-    for (const m of r.msgs || []) box.appendChild(el('p', { text: m }));
+    const fb = el('div', { class: 'feedback ' + cls, role: 'status' }, el('b', { class: 'fb-title', text: r.title || (cls === 'ok' ? 'Richtig' : 'Noch nicht richtig') }));
+    for (const m of r.msgs || []) fb.appendChild(el('p', { text: m }));
     const mm = (r.mids || []).map(mistakeById).filter(Boolean)[0];
-    if (mm) box.appendChild(mistakeCard(mm, P.mistakes[mm.id] && P.mistakes[mm.id].n));
-    return box;
+    if (mm) fb.appendChild(mistakeCard(mm, P.mistakes[mm.id] && P.mistakes[mm.id].n));
+    return fb;
   }
   function viewFormel(ex, done) {
     let attempts = 0, firstStatus = null, solved = false, shown = false;
@@ -720,6 +841,7 @@
     const btnSol = el('button', { class: 'btn ghost', onclick: () => showSolution(), style: { display: 'none' } }, 'Lösung zeigen');
     const btnNext = el('button', { class: 'btn primary', onclick: () => next(), style: { display: 'none' } }, 'Weiter');
     put(wrap,
+      el('div', { class: 'eyebrow ex-kind', text: 'Tippe die Formel ein' }),
       el('p', { class: 'prompt', text: ex.prompt }),
       ex.diagram ? diagram(ex.diagram, { small: true }) : null,
       grid,
@@ -799,8 +921,9 @@
       list.appendChild(b);
     });
     btnNext.addEventListener('click', () => done(outcome, mid ? [mid] : []));
-    put(wrap, el('p', { class: 'prompt', text: ex.prompt }), ex.formula ? formulaBox(ex.formula, 'big') : null, ex.diagram ? diagram(ex.diagram, { small: true }) : null,
-      ex.sheet ? sheetGrid(ex.sheet, { maxHeight: '36vh' }) : null, list, fbSlot, el('div', { class: 'row-btns' }, btnNext));
+    put(wrap, el('div', { class: 'eyebrow ex-kind', text: ex.choose ? 'Welche Formel ist richtig?' : 'Wähle die richtige Antwort' }),
+      el('p', { class: 'prompt', text: ex.prompt }), ex.formula ? formulaBox(ex.formula, 'big') : null, ex.diagram ? diagram(ex.diagram, { small: true }) : null,
+      ex.sheet ? sheetGrid(ex.sheet, { target: ex.target, fill: ex.fill, maxHeight: '36vh' }) : null, list, fbSlot, el('div', { class: 'row-btns' }, btnNext));
     return wrap;
   }
   function viewErgebnis(ex, done) {
@@ -831,7 +954,8 @@
       btnCheck.style.display = 'none';
       btnNext.style.display = '';
     }
-    put(wrap, el('p', { class: 'prompt', text: ex.prompt }), sheetGrid(ex.sheet, { target: ex.target, maxHeight: '40vh' }),
+    put(wrap, el('div', { class: 'eyebrow ex-kind', text: 'Was rechnet Excel aus?' }),
+      el('p', { class: 'prompt', text: ex.prompt }), sheetGrid(ex.sheet, { target: ex.target, maxHeight: '40vh' }),
       el('div', { class: 'f-line static' }, el('span', { class: 'fx', text: ex.target }), formulaBox(ex.formula)),
       el('label', { class: 'v-label' }, 'Was zeigt Excel in ' + ex.target + '?', input), fbSlot, el('div', { class: 'row-btns' }, btnCheck, btnNext));
     return wrap;
@@ -872,7 +996,8 @@
     }
     btnNext.addEventListener('click', () => done(outcome, []));
     draw();
-    put(wrap, el('p', { class: 'prompt', text: ex.prompt }), answer, chips, fbSlot, el('div', { class: 'row-btns' }, btnCheck, btnNext));
+    put(wrap, el('div', { class: 'eyebrow ex-kind', text: 'Bring die Teile in die richtige Reihenfolge' }),
+      el('p', { class: 'prompt', text: ex.prompt }), answer, chips, fbSlot, el('div', { class: 'row-btns' }, btnCheck, btnNext));
     return wrap;
   }
   function viewKarte(ex, done) {
@@ -889,63 +1014,58 @@
   }
 
   // =====================================================================
-  // Wiederholen
+  // Fächer wählen
   // =====================================================================
-  function viewReview() {
-    const due = dueList();
-    const mine = [...new Set(Object.values(P.mistakes).flatMap((r) => r.items))].map(exById).filter((e) => e && mySubjects().some((s) => s.id === topicById(e._topic)._subject));
-    const row = (ic, title, sub, onclick, primary, disabled) => el('button', { class: 'action review-card' + (primary ? ' primary' : ''), style: primary ? { background: 'var(--blue)' } : null, disabled: !!disabled, onclick },
-      el('span', { class: 'act-ic' }, icon(ic)), el('span', { class: 'act-text' }, el('b', { text: title }), el('span', { class: 'small', text: sub })), icon('chev', 'chev'));
-    screen({ title: 'Wiederholen', nav: 'rep' },
-      el('section', { class: 'actions' },
-        row('repeat', due.length ? due.length + ' Aufgaben fällig' : 'Nichts fällig', due.length ? 'Jetzt wiederholen' : 'Schau morgen wieder rein',
-          () => startSession(interleave(due).slice(0, 12), 'Wiederholen', '#/wiederholen'), due.length > 0, !due.length),
-        row('grid', 'Gemischt üben', 'Alle Themen durcheinander – wie in der Klausur', () => startSession(mixSet(myExercises()), 'Gemischt', '#/wiederholen')),
-        row('alert', 'Eigene Fehler', mine.length ? mine.length + ' Aufgaben mit typischem Fehler' : 'Noch keine Fehler gesammelt',
-          () => startSession(interleave(shuffle(mine)).slice(0, 10), 'Fehler üben', '#/wiederholen'), false, !mine.length)),
-      el('p', { class: 'small muted center', text: 'Richtige Aufgaben kommen nach 1, 3, 7 und 16 Tagen wieder, falsche schon am selben Tag.' }));
-  }
-  function mixSet(all) {
-    const weighted = all.map((e) => {
-      const t = topicById(e._topic);
-      const it = P.items[e.id];
-      return { e, k: Math.random() * (t.focus ? 3 : 1) * (it ? (6 - it.box) : 3) };
-    });
-    weighted.sort((a, b) => b.k - a.k);
-    return interleave(weighted.slice(0, 10).map((x) => x.e));
+  function viewPicker() {
+    const sel = new Set(P.subjects || SUBJECTS.map((s) => s.id));
+    const list = el('div', { class: 'picker' });
+    const draw = () => {
+      list.innerHTML = '';
+      for (const s of SUBJECTS) {
+        const on = sel.has(s.id);
+        list.appendChild(el('button', { class: 'pick' + (on ? ' on' : ''), style: { '--c': s.color }, onclick: () => { if (on) sel.delete(s.id); else sel.add(s.id); draw(); } },
+          el('span', { class: 'pick-dot' }), el('span', { class: 'pick-text' }, el('b', { text: s.name }), el('span', { class: 'small muted', text: s.sub })),
+          el('span', { class: 'pick-check' }, on ? icon('check') : null)));
+      }
+    };
+    draw();
+    screen({ title: 'Fächer wählen', back: '#/einstellungen' },
+      el('p', { class: 'muted', text: 'Wähle deine Fächer. Neue Fächer kommen nach und nach dazu. Zwischen den Fächern wechselst du im Menü.' }),
+      list,
+      el('button', { class: 'btn primary block', onclick: () => {
+        if (!sel.size) { toast('Wähle mindestens ein Fach.'); return; }
+        // alle gewählt = null: dann erscheinen später neue Fächer von selbst
+        P.subjects = sel.size === SUBJECTS.length ? null : SUBJECTS.filter((s) => sel.has(s.id)).map((s) => s.id);
+        saveP();
+        go('#/');
+      } }, 'Fertig'));
   }
 
   // =====================================================================
-  // Erfolge: Streak, Tagesziel, Medaillen
+  // Erfolge: Streak, Tagesziel, Sterne, Medaillen
   // =====================================================================
   function viewRewards() {
     const s = streak();
-    const goalSel = el('div', { class: 'seg' }, [5, 10, 20].map((g) => el('button', { class: 'seg-btn' + (goal() === g ? ' on' : ''), onclick: () => { P.settings.goal = g; checkGoal(); checkRewards(null); route(); } }, g + ' Aufgaben')));
+    const goalSel = el('div', { class: 'seg' }, [5, 10, 20].map((g) => el('button', { class: 'seg-btn' + (goal() === g ? ' on' : ''), onclick: () => { P.settings.goal = g; checkGoal(); checkRewards(); route(); } }, g + ' Aufgaben')));
     const earned = MEDALS.filter((m) => P.medals[m.id]).length;
     const grid = el('div', { class: 'medal-grid' }, MEDALS.map((m) => el('div', { class: 'medal-cell' + (P.medals[m.id] ? '' : ' locked') },
       medal({ color: m.color, glyph: m.glyph, size: 52, locked: !P.medals[m.id] }), el('b', { text: m.name }), el('span', { class: 'small muted', text: m.desc }))));
-    const topicMedals = [];
-    for (const sub of mySubjects()) {
-      topicMedals.push(el('h3', { class: 'group-h', style: { color: sub.color }, text: sub.name }));
-      topicMedals.push(el('div', { class: 'tmedal-list' }, sub.topics.map((t) => {
-        const tier = P.tiers[t.id];
-        return el('a', { class: 'tmedal', href: '#/t/' + t.id }, medal({ color: tier || 'gold', locked: !tier, glyph: 'star', size: 30 }), el('span', { text: t.title }), el('span', { class: 'small muted', text: tier ? TIER_NAME[tier] : mastery(t) + ' %' }));
-      })));
-    }
-    const answered = P.stats.answered, correctPct = answered ? Math.round(100 * P.stats.correct / answered) : 0;
-    screen({ title: 'Erfolge', nav: 'win', right: el('button', { class: 'icon-btn', 'aria-label': 'Einstellungen', onclick: () => go('#/einstellungen') }, icon('gear')) },
+    const sub = curSubject();
+    const L = pathOf(sub);
+    const lDone = L.filter(levelDone).length;
+    const lStars = L.reduce((a, l) => a + ((P.levels[l.id] || {}).stars || 0), 0);
+    screen({ title: 'Erfolge', back: '#/' },
       el('section', { class: 'card streak-card' },
         el('div', { class: 'sk-top' }, el('span', { class: 'sk-flame' + (s ? ' on' : '') }, icon('flame')), el('div', null, el('div', { class: 'sk-num', text: String(s) }), el('div', { class: 'muted small', text: (s === 1 ? 'Tag' : 'Tage') + ' in Folge · Rekord ' + (P.best || 0) }))),
         weekStrip(),
         el('div', { class: 'small muted', text: 'Ein Tag zählt, wenn du dein Tagesziel schaffst.' })),
+      el('section', { class: 'card stats' },
+        el('div', null, el('b', { text: lDone + '/' + L.length }), el('span', { class: 'small muted', text: 'Level' })),
+        el('div', null, el('b', { text: lStars + ' ★' }), el('span', { class: 'small muted', text: 'Sterne' })),
+        el('div', null, el('b', { text: String(P.stats.answered) }), el('span', { class: 'small muted', text: 'Aufgaben' }))),
       el('section', { class: 'card' }, el('b', { text: 'Tagesziel' }), goalSel),
       el('div', { class: 'row-head' }, el('h2', { text: 'Medaillen' }), el('span', { class: 'muted small', text: earned + ' von ' + MEDALS.length })),
-      grid,
-      el('h2', { text: 'Themen-Medaillen' }), el('p', { class: 'small muted', text: 'Bronze ab 30 %, Silber ab 65 %, Gold bei 100 % – je sicherer du ein Thema kannst.' }), ...topicMedals,
-      el('section', { class: 'card stats' },
-        el('div', null, el('b', { text: String(answered) }), el('span', { class: 'small muted', text: 'Aufgaben' })),
-        el('div', null, el('b', { text: correctPct + ' %' }), el('span', { class: 'small muted', text: 'gleich richtig' })),
-        el('div', null, el('b', { text: String(P.stats.examsDone) }), el('span', { class: 'small muted', text: 'Probeklausuren' }))));
+      grid);
   }
 
   // =====================================================================
@@ -965,15 +1085,15 @@
         el('div', null, el('b', { text: k.title }), el('div', { class: 'small muted', text: k.minutes + ' Min. · ' + examMax(k) + ' Punkte' + (st ? ' · Bestes: ' + fmtP(st.best) + ' P.' : '') })),
         el('a', { class: 'btn primary', style: { background: s.color }, href: '#/klausur/' + k.id }, st ? 'Nochmal' : 'Starten')));
     }
-    screen({ title: 'Probeklausur', sub: s.name, back: '#/f/' + s.id, color: s.color, nav: false }, ...parts);
+    screen({ title: 'Probeklausur', sub: s.name, back: '#/', color: s.color }, ...parts);
   }
   function viewExamStart(id) {
     const k = examById(id);
-    if (!k) return viewHome();
+    if (!k) return viewPath();
     const s = subjectById(k._subject);
     if (examState && examState.k.id === id && !examState.submitted) return renderExam();
     if (examState && examState.k.id === id && examState.submitted) return renderExamResult();
-    screen({ title: k.title, back: '#/f/' + s.id + '/klausur', nav: false },
+    screen({ title: k.title, back: '#/' },
       el('section', { class: 'card' }, el('p', { text: k.intro }),
         el('ul', { class: 'small' }, el('li', { text: k.tasks.length + ' Aufgaben, ' + examMax(k) + ' Punkte, ' + k.minutes + ' Minuten' }),
           el('li', { text: 'Gelbe Zellen = hier gehört eine Formel hin. Die Werte zeigen, was herauskommen soll.' }), el('li', { text: 'Tippe auf eine Zelle, um sie in die Formel einzufügen.' }))),
@@ -983,23 +1103,23 @@
     const st = examState, k = st.k;
     const timer = el('span', { class: 'timer' }, icon('clock'), el('b', { text: '' }));
     const submit = el('button', { class: 'btn small-btn', onclick: () => { if (confirm('Klausur jetzt abgeben?')) submitExam(); } }, 'Abgeben');
-    const main = screen({ title: k.title, nav: false, right: el('div', { class: 'top-right' }, timer, submit), cls: 'exam' });
+    const main = screen({ title: k.title, right: el('div', { class: 'top-right' }, timer, submit), cls: 'exam' });
     const inputs = {};
     const grid = sheetGrid(k.sheet, { showTarget: 'value', maxHeight: '42vh', onCell: (a) => { if (st.active && inputs[st.active]) inputs[st.active].insertRef(a); } });
     main.appendChild(grid);
     k.tasks.forEach((t, i) => {
       const key = t.cell || ('mc' + i);
       const head = el('div', { class: 'task-head' }, el('span', { class: 'cell-chip', text: t.cell || ('Aufgabe ' + (i + 1)) }), el('span', { class: 'small muted', text: t.points + ' P' }));
-      const box = el('section', { class: 'card task' }, head, el('p', { text: t.prompt }));
+      const card = el('section', { class: 'card task' }, head, el('p', { text: t.prompt }));
       if (t.type === 'wahl') {
-        if (t.diagram) box.appendChild(diagram(t.diagram, { small: true }));
+        if (t.diagram) card.appendChild(diagram(t.diagram, { small: true }));
         const list = el('div', { class: 'options' });
         t.options.forEach((o, j) => {
           const b = el('button', { class: 'option' + (st.answers[key] === j ? ' picked' : '') }, optionNode(o));
           b.addEventListener('click', () => { st.answers[key] = j; [...list.children].forEach((c, q) => c.classList.toggle('picked', q === j)); });
           list.appendChild(b);
         });
-        box.appendChild(list);
+        card.appendChild(list);
       } else {
         const fi = formulaInput({ fns: FNS.exam, value: st.answers[key] || '' });
         fi.box.classList.add('compact');
@@ -1017,9 +1137,9 @@
         });
         fi.input.addEventListener('input', () => { st.answers[key] = fi.value(); });
         inputs[key] = fi;
-        box.appendChild(fi.box);
+        card.appendChild(fi.box);
       }
-      main.appendChild(box);
+      main.appendChild(card);
     });
     main.appendChild(el('button', { class: 'btn primary block', onclick: () => { if (confirm('Klausur jetzt abgeben?')) submitExam(); } }, 'Abgeben'));
     const tick = () => {
@@ -1065,9 +1185,16 @@
     P.exams[k.id] = rec;
     P.stats.examsDone++;
     P.stats.bestExamPct = Math.max(P.stats.bestExamPct, pct);
+    // zählt als Level im Weg
+    const lid = 'exam:' + k.id;
+    const lr = P.levels[lid] || { stars: 0, plays: 0 };
+    lr.stars = Math.max(lr.stars || 0, pct >= 92 ? 3 : pct >= 67 ? 2 : 1);
+    lr.plays = (lr.plays || 0) + 1;
+    lr.last = today();
+    P.levels[lid] = lr;
     saveP();
     renderExamResult();
-    checkRewards(null);
+    checkRewards();
   }
   function renderExamResult() {
     const st = examState, k = st.k;
@@ -1101,24 +1228,24 @@
       parts.push(el('button', { class: 'btn primary block', style: { background: s.color }, onclick: () => {
         const items = [...weakTopics].map(topicById).filter(Boolean).flatMap((t) => t.exercises).filter((e) => e.type === 'formel');
         examState = null;
-        startSession(interleave(shuffle(items)).slice(0, 10), 'Schwächen üben', '#/f/' + s.id);
+        startSession(interleave(shuffle(items)).slice(0, 10), 'Schwächen üben', '#/');
       } }, 'Schwache Themen üben'));
     }
-    parts.push(el('button', { class: 'btn ghost block', onclick: () => { examState = null; go('#/f/' + s.id + '/klausur'); } }, 'Fertig'));
-    screen({ title: k.title, nav: false }, ...parts);
+    parts.push(el('button', { class: 'btn ghost block', onclick: () => { examState = null; go('#/'); } }, 'Fertig'));
+    screen({ title: k.title }, ...parts);
   }
 
   // =====================================================================
   // Einstellungen
   // =====================================================================
   function viewSettings() {
-    screen({ title: 'Einstellungen', back: '#/', nav: false },
+    screen({ title: 'Einstellungen', back: '#/' },
       el('a', { class: 'link-row card', href: '#/faecher' }, icon('grid'), el('span', { text: 'Fächer wählen' }), icon('chev', 'chev')),
       el('section', { class: 'card' }, el('b', { text: 'App aufs Handy legen' }),
         el('p', { class: 'small', text: 'iPhone: Seite in Safari öffnen → Teilen → „Zum Home-Bildschirm“.' }),
         el('p', { class: 'small', text: 'Android: Seite in Chrome öffnen → ⋮ → „App installieren“.' })),
-      el('section', { class: 'card' }, el('b', { text: 'Fortschritt' }), el('p', { class: 'small muted', text: 'Dein Fortschritt, deine Medaillen und dein Streak werden nur auf diesem Gerät gespeichert.' }),
-        el('button', { class: 'btn ghost block', onclick: () => { if (confirm('Wirklich den ganzen Fortschritt löschen (auch Medaillen und Streak)?')) { P = defaults(); saveP(); toast('Fortschritt gelöscht'); go('#/'); } } }, 'Fortschritt löschen')),
+      el('section', { class: 'card' }, el('b', { text: 'Fortschritt' }), el('p', { class: 'small muted', text: 'Dein Fortschritt, deine Sterne, Medaillen und dein Streak werden nur auf diesem Gerät gespeichert.' }),
+        el('button', { class: 'btn ghost block', onclick: () => { if (confirm('Wirklich den ganzen Fortschritt löschen (auch Level, Medaillen und Streak)?')) { P = defaults(); saveP(); toast('Fortschritt gelöscht'); go('#/'); } } }, 'Fortschritt löschen')),
       el('section', { class: 'card' }, el('b', { text: 'Abmelden' }), el('p', { class: 'small muted', text: 'Beim nächsten Öffnen wird wieder nach dem Kennwort gefragt.' }),
         el('button', { class: 'btn ghost block', onclick: () => { LCrypto.forgetKey(); location.hash = ''; location.reload(); } }, 'Abmelden')),
       el('p', { class: 'small muted center', text: 'Lernapp · Stand ' + (META.built || '') }));
@@ -1160,9 +1287,15 @@
   function start() {
     indexCourse();
     // Medaillen, die durch frühere Fortschritte schon verdient sind, still nachtragen
-    for (const t of TOPICS.values()) { const tier = tierOf(mastery(t)); if (tier && (TIER_RANK[tier] || 0) > (TIER_RANK[P.tiers[t.id]] || 0)) P.tiers[t.id] = tier; }
     for (const m of MEDALS) if (!P.medals[m.id] && m.test()) P.medals[m.id] = today();
     saveP();
+    // für die automatischen Tests: Level-Weg und erzeugte Auswahl-Aufgaben prüfen
+    window.LernappDebug = {
+      report() {
+        return SUBJECTS.map((s) => ({ subject: s.id, levels: pathOf(s).map((l) => ({ id: l.id, kind: l.kind, n: l.kind === 'exam' ? 1 : levelItems(l).length })),
+          choices: s.topics.flatMap((t) => t.exercises.filter((e) => e.type === 'formel').map((e) => ({ id: e.id, d3: distractors(e, 2).map((x) => x.f), d4: distractors(e, 3).length }))) }));
+      },
+    };
     route();
   }
   async function boot() {
