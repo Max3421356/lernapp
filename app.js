@@ -111,6 +111,21 @@
   }
   applySize(true);
   window.addEventListener('resize', () => applySize(false));
+
+  // =====================================================================
+  // Darstellung: hell, dunkel oder wie das Gerät (Standard). index.html setzt die Klasse schon vor dem ersten Bild.
+  // =====================================================================
+  const THEMES = [['hell', 'Hell'], ['dunkel', 'Dunkel'], ['auto', 'Automatisch']];
+  const darkMQ = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
+  function applyTheme() {
+    const t = P.settings.theme || 'auto';
+    const dark = t === 'dunkel' || (t === 'auto' && !!(darkMQ && darkMQ.matches));
+    document.documentElement.classList.toggle('dark', dark);
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', dark ? '#0F141B' : '#2F7DE1');
+  }
+  applyTheme();
+  if (darkMQ) { if (darkMQ.addEventListener) darkMQ.addEventListener('change', applyTheme); else if (darkMQ.addListener) darkMQ.addListener(applyTheme); }
   window.addEventListener('orientationchange', () => setTimeout(() => applySize(true), 300));
 
   const box = (id) => ((P.items[id] || {}).box || 0);
@@ -142,8 +157,8 @@
       ['choose', 'mixed', 'type'].forEach((k, j) => L.push({ id: t.id + ':' + (j + 1), kind: k, topic: t.id, title: t.title, color: colorOf(t) }));
       if (i % 2 === 1 || i === s.topics.length - 1) L.push({ id: s.id + ':mix' + (i + 1), kind: 'review', upto: i, title: 'Wiederholung', color: '#5B6B8C' });
     });
-    (s.exams || []).forEach((k) => L.push({ id: 'exam:' + k.id, kind: 'exam', exam: k.id, title: k.title, color: '#1F2A44' }));
-    (s.essays || []).forEach((k) => L.push({ id: 'essay:' + k.id, kind: 'essay', essay: k.id, title: k.title, color: '#1F2A44' }));
+    (s.exams || []).forEach((k) => L.push({ id: 'exam:' + k.id, kind: 'exam', exam: k.id, title: k.title, color: 'var(--navy)' }));
+    (s.essays || []).forEach((k) => L.push({ id: 'essay:' + k.id, kind: 'essay', essay: k.id, title: k.title, color: 'var(--navy)' }));
     L.forEach((l, i) => { l.n = i + 1; l.subject = s.id; l.i = i; l.name = (s.levelNames || {})[l.kind] || KIND[l.kind].name; });
     return (s._path = L);
   }
@@ -531,7 +546,7 @@
       s.gallery ? row('image', 'Alle Bilder', '#/f/' + s.id + '/bilder', '#0E9F8E') : null,
       playlistOf(s).length ? row('play', 'Alle Videos', '#/f/' + s.id + '/videos', '#DD4238') : null,
       s.wordbank ? row('book', 'Linking words', '#/f/' + s.id + '/woerter', '#0E9F8E') : null,
-      (s.exams || []).length ? row('exam', 'Probeklausur', '#/f/' + s.id + '/klausur', '#1F2A44') : null,
+      (s.exams || []).length ? row('exam', 'Probeklausur', '#/f/' + s.id + '/klausur', 'var(--navy)') : null,
       (s.essays || []).length ? row('pencil', ((s.levelNames || {}).essay || 'Probe-Text') + ' schreiben', '#/f/' + s.id + '/aufsaetze', '#8A4FD8') : null,
       row('alert', 'Häufige Fehler', '#/f/' + s.id + '/fehler', '#E8762B'),
       row('trophy', 'Erfolge', '#/erfolge', '#C98A00'),
@@ -2199,11 +2214,17 @@
           class: 'seg-btn' + ((P.settings.size || 'normal') === id ? ' on' : ''),
           onclick: () => { P.settings.size = id; saveP(); applySize(true); viewSettings(); }
         }, label)))),
+      el('section', { class: 'card' }, el('b', { text: 'Darstellung' }),
+        el('p', { class: 'small muted', text: 'Dunkel schont die Augen am Abend. „Automatisch“ macht es wie dein Handy.' }),
+        el('div', { class: 'seg theme-seg' }, THEMES.map(([id, label]) => el('button', {
+          class: 'seg-btn' + ((P.settings.theme || 'auto') === id ? ' on' : ''),
+          onclick: () => { P.settings.theme = id; saveP(); applyTheme(); viewSettings(); }
+        }, label)))),
       el('section', { class: 'card' }, el('b', { text: 'App aufs Handy legen' }),
         el('p', { class: 'small', text: 'iPhone: Seite in Safari öffnen → Teilen → „Zum Home-Bildschirm“.' }),
         el('p', { class: 'small', text: 'Android: Seite in Chrome öffnen → ⋮ → „App installieren“.' })),
       el('section', { class: 'card' }, el('b', { text: 'Fortschritt' }), el('p', { class: 'small muted', text: 'Dein Fortschritt, deine Sterne, Medaillen und dein Streak werden nur auf diesem Gerät gespeichert.' }),
-        el('button', { class: 'btn ghost block', onclick: () => { if (confirm('Wirklich den ganzen Fortschritt löschen (auch Level, Medaillen und Streak)?')) { P = defaults(); saveP(); applySize(true); toast('Fortschritt gelöscht'); go('#/'); } } }, 'Fortschritt löschen')),
+        el('button', { class: 'btn ghost block', onclick: () => { if (confirm('Wirklich den ganzen Fortschritt löschen (auch Level, Medaillen und Streak)?')) { P = defaults(); saveP(); applySize(true); applyTheme(); toast('Fortschritt gelöscht'); go('#/'); } } }, 'Fortschritt löschen')),
       el('section', { class: 'card' }, el('b', { text: 'Abmelden' }), el('p', { class: 'small muted', text: 'Beim nächsten Öffnen wird wieder nach dem Kennwort gefragt.' }),
         el('button', { class: 'btn ghost block', onclick: () => { LCrypto.forgetKey(); location.hash = ''; location.reload(); } }, 'Abmelden')),
       el('p', { class: 'small muted center', text: 'Lernapp · Stand ' + (META.built || '') }));
