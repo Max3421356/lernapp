@@ -3,7 +3,7 @@
    Der Fortschritt bleibt auf dem jeweiligen Gerät. */
 (function () {
   'use strict';
-  const { el, icon, toast, formulaBox, sheetGrid, diagram, formulaInput, medal, medalPopup } = UI;
+  const { el, icon, toast, formulaBox, sheetGrid, centerCell, diagram, formulaInput, medal, medalPopup } = UI;
   // wie Element.append, aber ohne leere Teile (null, false)
   const put = (node, ...kids) => { for (const k of kids.flat()) { if (k === null || k === undefined || k === false) continue; node.appendChild(typeof k === 'string' ? document.createTextNode(k) : k); } return node; };
   const app = document.getElementById('app');
@@ -14,11 +14,12 @@
   // =====================================================================
   // Inhalte
   // =====================================================================
-  const TOPICS = new Map(), EXS = new Map(), MISTAKES = new Map();
+  const TOPICS = new Map(), EXS = new Map(), MISTAKES = new Map(), IMAGES = new Map();
   function indexCourse() {
     SUBJECTS = COURSE.subjects || [];
-    TOPICS.clear(); EXS.clear(); MISTAKES.clear();
+    TOPICS.clear(); EXS.clear(); MISTAKES.clear(); IMAGES.clear();
     for (const s of SUBJECTS) {
+      for (const k of Object.keys(s.images || {})) IMAGES.set(k, s.images[k]);
       for (const t of s.topics) {
         t._subject = s.id;
         TOPICS.set(t.id, t);
@@ -45,6 +46,9 @@
   // Level-Weg eines Fachs; die Startseite '#/' zeigt alle Fächer
   const pathHash = (s) => '#/f/' + (s || curSubject()).id;
   const subjectIcon = (s) => s.icon || 'book';
+  // Sprache der Aufgabe (Englisch: en, sonst de)
+  const subjOfEx = (ex) => { const t = ex && topicById(ex._topic); return t ? subjectById(t._subject) : null; };
+  const langOf = (ex) => ((subjOfEx(ex) || {}).lang || 'de');
 
   // =====================================================================
   // Fortschritt (Lernkartei mit 5 Fächern, Level mit Sternen) – nur auf diesem Gerät
@@ -70,6 +74,45 @@
     } catch (e) { return defaults(); }
   }
   function saveP() { try { localStorage.setItem(PKEY, JSON.stringify(P)); } catch (e) { /* voll oder privat */ } }
+
+  // =====================================================================
+  // Größe: Auf iPad und PC wird alles größer (CSS zoom). In den Einstellungen noch größer oder kleiner.
+  // =====================================================================
+  const SIZE_STEPS = [['klein', 'Klein', 0.85], ['normal', 'Normal', 1], ['gross', 'Groß', 1.15], ['sehrgross', 'Sehr groß', 1.3]];
+  const canZoom = !!(window.CSS && CSS.supports && CSS.supports('zoom', '1.5'));
+  const touchFirst = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+  let sizeW = 0, sizeH = 0, curZ = 1, winScaled = false;
+  function applySize(force) {
+    // falls ein Browser die Fenstergröße mit dem Zoom umrechnet: zurückrechnen (sonst schaukelt es sich auf)
+    const k = winScaled ? curZ : 1;
+    const w = Math.round(window.innerWidth * k), h = Math.round(window.innerHeight * k);
+    if (!w || !h) return;
+    // Nur die Höhe ändert sich (Tastatur, Leiste im Browser): nichts ändern, sonst springt alles beim Tippen
+    const typing = document.activeElement && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+    if (!force && w === sizeW && (typing || Math.abs(h - sizeH) < sizeH * 0.2)) return;
+    sizeW = w; sizeH = h;
+    const landscape = w >= 900 && w >= h * 1.2;
+    // Handy bleibt bei 1. Größere Bildschirme: so groß, dass die Spalte die Breite gut nutzt und alles draufpasst
+    let z = landscape ? Math.min((w - 48) / 940, h / 560) : Math.min((w - 48) / 560, h / 640);
+    z = Math.max(1, Math.min(1.5, z));
+    const step = SIZE_STEPS.find((x) => x[0] === P.settings.size) || SIZE_STEPS[1];
+    z = Math.round(z * step[2] * 100) / 100;
+    // auf Touch-Geräten nie kleiner als normal (sonst zoomt das iPhone beim Tippen ins Feld)
+    z = Math.max(touchFirst ? 1 : 0.8, z);
+    if (!canZoom) z = 1;
+    const de = document.documentElement;
+    de.style.zoom = z === 1 ? '' : String(z);
+    curZ = z;
+    if (z !== 1 && !winScaled && Math.abs(window.innerWidth - w) > 3) winScaled = true;
+    de.style.setProperty('--vh', (h / 100 / z).toFixed(3) + 'px');
+    de.style.setProperty('--vw', (w / 100 / z).toFixed(3) + 'px');
+    // zwei Spalten (Tabelle links, Eingabe rechts), wenn genug Platz ist
+    de.classList.toggle('wide', landscape && (w - 48) / z >= 880);
+  }
+  applySize(true);
+  window.addEventListener('resize', () => applySize(false));
+  window.addEventListener('orientationchange', () => setTimeout(() => applySize(true), 300));
+
   const box = (id) => ((P.items[id] || {}).box || 0);
   function interleave(list) {
     const by = new Map();
@@ -175,7 +218,7 @@
     if (CHOICE.has(id)) return CHOICE.get(id);
     if (ex.type === 'luecke') {
       const w = (ex.wrong || []).slice(0, n - 1);
-      const it = w.length < 2 ? null : { id, type: 'wahl', _topic: ex._topic, prompt: ex.prompt, text: ex.text, explain: ex.explain,
+      const it = w.length < 2 ? null : { id, type: 'wahl', _topic: ex._topic, prompt: ex.prompt, text: ex.text, explain: ex.explain, img: ex.img, hl: ex.hl,
         options: [{ t: ex.answers[0], ok: true }].concat(w.map((x) => ({ t: x.t, ok: false, mid: x.mid, why: x.why }))) };
       CHOICE.set(id, it);
       return it;
@@ -188,8 +231,38 @@
     CHOICE.set(id, item);
     return item;
   }
+  // Biologie: Erkennen (Auswahl, im Bild antippen), Üben (Reihenfolge, Tabelle, Bilder), selber schreiben (Fachbegriffe + eine eigene Antwort)
+  function bioLevelItems(l, s) {
+    const t0 = today();
+    // unsichere und fällige zuerst, sonst zufällig
+    const fresh = (list) => list.map((e) => { const it = P.items[e.id]; const due = it && it.due <= t0; return { e, k: box(e.id) * 2 - (due ? 3 : 0) + Math.random() * 1.5 }; })
+      .sort((a, b) => a.k - b.k).map((x) => x.e);
+    if (l.kind === 'review') {
+      const pool = s.topics.slice(0, l.upto + 1).flatMap((t) => t.exercises);
+      const by = (type) => fresh(pool.filter((e) => e.type === type));
+      const lu = by('luecke');
+      const mc = lu.slice(3).map((e) => asChoice(e, 4)).filter(Boolean).slice(0, 1);
+      return interleave(lu.slice(0, 3).concat(by('bild').slice(0, 1), by('wahl').slice(0, 1), mc));
+    }
+    const t = topicById(l.topic);
+    if (!t) return [];
+    const by = (type) => fresh(t.exercises.filter((e) => e.type === type));
+    const wahl = by('wahl'), bild = by('bild'), luecke = by('luecke');
+    if (l.kind === 'choose') {
+      const mc = luecke.map((e) => asChoice(e, 3)).filter(Boolean);
+      return wahl.slice(0, 2).concat(bild.slice(0, 1), mc.slice(0, 2));
+    }
+    if (l.kind === 'mixed') {
+      const struct = shuffle(by('ordnen').concat(by('tabelle'))).slice(0, 1);
+      const mc = luecke.map((e) => asChoice(e, 4)).filter(Boolean);
+      return shuffle(struct.concat(bild.slice(1, 3), wahl.slice(2, 3), mc.slice(2, 4)));
+    }
+    return luecke.slice(0, 4).concat(by('antwort').slice(0, 1));
+  }
   // Aufgaben eines Levels
   function levelItems(l) {
+    const subj = subjectById(l.subject);
+    if (subj && subj.levelStyle === 'bio') return bioLevelItems(l, subj);
     if (l.kind === 'review') {
       const s = subjectById(l.subject);
       const t0 = today();
@@ -420,6 +493,8 @@
       if (c === 'videos') return viewVideos(s);
       if (c === 'woerter') return viewWordbank(s);
       if (c === 'aufsaetze') return viewEssays(s);
+      if (c === 'bilder') return parts[3] !== undefined ? viewImage(s, +parts[3]) : viewGallery(s);
+      if (c === 'checkliste') return viewChecklist(s);
       return viewPath(s);
     }
     if (a === 'themen') return viewThemen(curSubject());
@@ -452,6 +527,8 @@
     const sheet = el('div', { class: 'menu-sheet', role: 'dialog', 'aria-label': 'Menü' },
       el('div', { class: 'menu-grab' }),
       row('list', 'Themen-Übersicht', '#/f/' + s.id + '/themen', '#4F5BD5'),
+      s.checklist ? row('check', 'Checkliste zur Klassenarbeit', '#/f/' + s.id + '/checkliste', '#2E9D4F') : null,
+      s.gallery ? row('image', 'Alle Bilder', '#/f/' + s.id + '/bilder', '#0E9F8E') : null,
       playlistOf(s).length ? row('play', 'Alle Videos', '#/f/' + s.id + '/videos', '#DD4238') : null,
       s.wordbank ? row('book', 'Linking words', '#/f/' + s.id + '/woerter', '#0E9F8E') : null,
       (s.exams || []).length ? row('exam', 'Probeklausur', '#/f/' + s.id + '/klausur', '#1F2A44') : null,
@@ -714,7 +791,8 @@
         el('div', { class: 'eyebrow', text: (i + 1) + ' / ' + t.cards.length }),
         el('h2', { text: c.title }), el('p', { text: c.body }),
         c.formula ? formulaBox(c.formula, 'big') : null,
-        c.diagram ? diagram(c.diagram) : null);
+        c.diagram ? diagram(c.diagram) : null,
+        c.img ? figure(c.img, { hl: c.hl, labels: c.labels }) : null);
       const dots = el('div', { class: 'dots' }, t.cards.map((_, k) => el('i', { class: k === i ? 'on' : '' })));
       const nav = el('div', { class: 'row-btns' },
         el('button', { class: 'btn ghost', disabled: i === 0, onclick: () => { i--; draw(); } }, 'Zurück'),
@@ -765,7 +843,8 @@
       main.innerHTML = '';
       const st = ex.steps[i];
       const block = ex.segments.some((x) => x.length > 120);
-      const text = el('section', { class: 'card model-text' + (block ? ' blocks' : ''), lang: 'en', style: { '--c': colorOf(t) } },
+      const lang = (subjectById(t._subject) || {}).lang || 'en';
+      const text = el('section', { class: 'card model-text' + (block ? ' blocks' : ''), lang, style: { '--c': colorOf(t) } },
         ex.segments.map((seg, k) => el(block ? 'p' : 'span', { class: 'seg' + (st.hl.includes(k) ? ' on' : ''), text: seg + (block ? '' : ' ') })));
       const card = el('section', { class: 'card step-card' }, el('div', { class: 'eyebrow', text: 'Schritt ' + (i + 1) + ' / ' + ex.steps.length }), el('p', { text: st.text }));
       const nav = el('div', { class: 'row-btns sticky-nav' },
@@ -773,14 +852,14 @@
         i < ex.steps.length - 1
           ? el('button', { class: 'btn primary', style: { background: colorOf(t) }, onclick: () => { i++; draw(); } }, 'Weiter')
           : el('button', { class: 'btn primary', style: { background: colorOf(t) }, onclick: () => { markSeen(t.id, 'example'); go('#/t/' + t.id); } }, 'Fertig'));
-      put(main, card, text, nav);
+      put(main, card, ex.img ? el('section', { class: 'card fig-card' }, figure(ex.img, { hl: ex.hl })) : null, text, nav);
     }
     draw();
   }
 
   // ---------- Häufige Fehler ----------
   function mistakeCard(m, count, open) {
-    const val = (txt) => (m.lang === 'en' ? el('span', { class: 'm-txt', lang: 'en', text: txt }) : el('code', { text: txt }));
+    const val = (txt) => (m.lang ? el('span', { class: 'm-txt', lang: m.lang, text: txt }) : el('code', { text: txt }));
     const body = el('div', { class: 'm-body' },
       el('div', { class: 'm-line bad' }, el('span', { class: 'm-tag', text: 'Falsch' }), val(m.falsch)),
       el('div', { class: 'm-line good' }, el('span', { class: 'm-tag', text: 'Richtig' }), val(m.richtig)),
@@ -858,7 +937,10 @@
       s.idx++;
       renderSession();
     };
-    main.appendChild(viewExercise(ex, done, t));
+    const view = viewExercise(ex, done, t);
+    // Aufgaben mit Tabelle dürfen auf breiten Bildschirmen breiter sein (zwei Spalten)
+    if (view.classList && view.classList.contains('split')) app.classList.add('roomy');
+    main.appendChild(view);
   }
   function firstTryScore(s) {
     const firstTry = new Map();
@@ -955,21 +1037,40 @@
       case 'karte': return viewKarte(ex, done);
       case 'luecke': return viewLuecke(ex, done);
       case 'schreiben': return viewSchreiben(ex, done);
+      case 'bild': return viewBild(ex, done);
+      case 'tabelle': return viewTabelle(ex, done);
+      case 'antwort': return viewAntwort(ex, done);
     }
     return el('p', { text: 'Unbekannter Aufgabentyp.' });
   }
   // ---------- Lückentext: das fehlende Wort eintippen ----------
   const normA = (x) => String(x || '').toLowerCase().replace(/[’`´]/g, "'").replace(/[.,!?;:"“”„]/g, ' ').replace(/\s+/g, ' ').trim();
-  function gapSentence(text, gapNode) {
+  // Deutsch: Groß/klein, Umlaute (ae/ä), Bindestriche und Leerzeichen sind egal
+  const normDe = (x) => String(x || '').toLowerCase().replace(/ß/g, 'ss').replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/[^a-z0-9]/g, '');
+  function lev(a, b) {
+    if (Math.abs(a.length - b.length) > 2) return 3;
+    let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i];
+      for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+    return prev[b.length];
+  }
+  // kleiner Tippfehler in einem langen Fachbegriff zählt noch (mit Hinweis auf die Schreibweise)
+  const typoOk = (ans, v) => { const n = ans.length, k = lev(ans, v); return k === 0 || (n >= 7 && k === 1) || (n >= 11 && k <= 2); };
+  function gapSentence(text, gapNode, lang) {
     const [a, b] = String(text).split('___');
-    return el('p', { class: 'gap-text', lang: 'en' }, a, gapNode, b || '');
+    return el('p', { class: 'gap-text', lang: lang || 'en' }, a, gapNode, b || '');
   }
   function viewLuecke(ex, done) {
     let attempts = 0, outcome = null;
     const mids = [];
+    const lang = langOf(ex), de = lang === 'de';
+    const norm = de ? normDe : normA;
     const wrap = el('div', { class: 'ex ex-luecke' });
     const gap = el('span', { class: 'gap' }, '…');
-    const input = el('input', { type: 'text', class: 'v-input gap-input', placeholder: 'Wort eintippen', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'done', lang: 'en' });
+    const input = el('input', { type: 'text', class: 'v-input gap-input', placeholder: de ? 'Fachbegriff eintippen' : 'Wort eintippen', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'done', lang });
     input.addEventListener('input', () => { gap.textContent = input.value.trim() || '…'; });
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (!outcome) check(); } });
     const fbSlot = el('div');
@@ -977,17 +1078,21 @@
     const btnNext = el('button', { class: 'btn primary', style: { display: 'none' }, onclick: () => done(outcome, mids) }, 'Weiter');
     const also = () => (ex.answers.length > 1 ? ' – auch möglich: ' + ex.answers.slice(1).join(', ') : '');
     function check() {
-      const v = normA(input.value);
-      if (!v) { toast('Bitte zuerst etwas eintippen.'); return; }
+      if (!normA(input.value)) { toast('Bitte zuerst etwas eintippen.'); return; }
+      const v = norm(input.value);
       attempts++;
-      const ok = ex.answers.some((a) => normA(a) === v);
-      const known = (ex.wrong || []).find((w) => normA(w.t) === v);
+      let ok = ex.answers.some((a) => norm(a) === v);
+      const known = (ex.wrong || []).find((w) => norm(w.t) === v);
+      // Tippfehler nur, wenn die Eingabe nicht näher an einer typischen falschen Antwort liegt
+      const typo = !ok && !known && de && ex.answers.some((a) => typoOk(norm(a), v)) && !(ex.wrong || []).some((w) => lev(norm(w.t), v) <= 1);
+      if (typo) ok = true;
       const kmid = known && known.mid ? [known.mid] : [];
       fbSlot.innerHTML = '';
       if (ok) {
         outcome = attempts === 1 ? 'first' : 'fast';
         gap.classList.add('ok');
-        fbSlot.appendChild(feedbackBox({ status: 'richtig', title: 'Richtig', msgs: [ex.answers[0] + also()].concat(ex.explain ? [ex.explain] : []) }));
+        if (typo) gap.textContent = ex.answers[0];
+        fbSlot.appendChild(feedbackBox({ status: 'richtig', title: 'Richtig', msgs: [(typo ? 'Achte auf die Schreibweise: ' : '') + ex.answers[0] + also()].concat(ex.explain ? [ex.explain] : []) }));
       } else {
         if (kmid.length) { mids.push(kmid[0]); recordMistakes(kmid, ex.id); }
         if (attempts < 2) {
@@ -1005,8 +1110,9 @@
       btnNext.style.display = '';
       fbSlot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
-    put(wrap, el('div', { class: 'eyebrow ex-kind', text: 'Tippe das fehlende Wort ein' }), el('p', { class: 'prompt', text: ex.prompt }),
-      el('section', { class: 'card gap-card' }, gapSentence(ex.text, gap)), input, fbSlot, el('div', { class: 'row-btns' }, btnCheck, btnNext));
+    put(wrap, el('div', { class: 'eyebrow ex-kind', text: de ? 'Tippe den Fachbegriff ein' : 'Tippe das fehlende Wort ein' }), el('p', { class: 'prompt', text: ex.prompt }),
+      ex.img ? figure(ex.img, { hl: ex.hl }) : null,
+      el('section', { class: 'card gap-card' }, gapSentence(ex.text, gap, lang)), input, fbSlot, el('div', { class: 'row-btns' }, btnCheck, btnNext));
     return wrap;
   }
   // ---------- selbst schreiben: automatische Prüfpunkte, dann ein Mustertext ----------
@@ -1060,34 +1166,51 @@
     if (mm) fb.appendChild(mistakeCard(mm, P.mistakes[mm.id] && P.mistakes[mm.id].n));
     return fb;
   }
+  // Hinweis unter der Tabelle: bis wohin man das Kästchen ziehen kann
+  function fillHint(target, fill) {
+    const rg = XL.parseRange(fill), end = fill.split(':')[1];
+    const how = rg.c1 === rg.c2 ? 'herunterziehen' : rg.r1 === rg.r2 ? 'nach rechts ziehen' : 'ziehen (nach rechts und unten)';
+    return 'Kästchen an ' + target + ' bis ' + end + ' ' + how + ', wie in Excel';
+  }
   function viewFormel(ex, done) {
     let attempts = 0, firstStatus = null, solved = false, shown = false, closed = false;
     const lastMids = [];
-    const wrap = el('div', { class: 'ex ex-formel' });
-    const fi = formulaInput({ fns: FNS[ex._topic] || FNS.exam, onEnter: () => check() });
-    let grid = sheetGrid(ex.sheet, { target: ex.target, fill: ex.fill, onCell: (a) => fi.insertRef(a), maxHeight: '44vh' });
-    // zeigt, was die eingegebene Formel ausrechnen würde (wie in Excel nach dem Herunterziehen)
+    const wrap = el('div', { class: 'ex ex-formel split' });
+    let grid = null;
+    let filled = null;   // Bereich, bis zu dem man die Formel heruntergezogen hat (z. B. C5:C9)
+    const fi = formulaInput({ fns: FNS[ex._topic] || FNS.exam, onEnter: () => check(), onPointEnd: () => grid.api.clearSel() });
+    grid = sheetGrid(ex.sheet, {
+      target: ex.target, fill: ex.fill, maxHeight: '44vh',
+      onCell: (a) => fi.insertRef(a), onRange: (r) => fi.insertRef(r),
+      // am Kästchen gezogen: die Formel in die Zellen schreiben, wie in Excel
+      onFill: ex.fill ? (rg) => {
+        if (!fi.value().replace(/^\s*=/, '').trim()) { toast('Tippe zuerst die Formel für ' + ex.target + ' ein.'); return; }
+        filled = rg;
+        grid.api.show(filled, fi.value(), 'filled');
+      } : null
+    });
+    // heruntergezogene Werte ändern sich mit, während man die Formel ändert
+    fi.input.addEventListener('input', () => { if (filled && !closed) grid.api.show(filled, fi.value(), 'filled'); });
+    // zeigt, was die eingegebene Formel ausrechnet, wenn man sie ganz herunterzieht
     function showResult(formula, status) {
       const cls = status === 'richtig' ? 'shown' : status === 'fast' ? 'shown-warn' : 'shown-bad';
-      let f = String(formula || '').trim();
-      if (f && f[0] !== '=') f = '=' + f;
-      try {
-        const g = sheetGrid(ex.sheet, { show: { range: ex.fill || (ex.target + ':' + ex.target), formula: f, cls }, onCell: (a) => fi.insertRef(a), maxHeight: '44vh' });
-        grid.replaceWith(g);
-        grid = g;
-      } catch (e) { /* Formel nicht darstellbar */ }
+      filled = ex.fill || (ex.target + ':' + ex.target);
+      try { grid.api.show(filled, formula, cls); grid.api.reveal(); } catch (e) { /* Formel nicht darstellbar */ }
     }
     const fbSlot = el('div');
     const btnCheck = el('button', { class: 'btn primary', onclick: () => check() }, 'Prüfen');
     const btnSol = el('button', { class: 'btn ghost', onclick: () => showSolution(), style: { display: 'none' } }, 'Lösung zeigen');
     const btnNext = el('button', { class: 'btn primary', onclick: () => next(), style: { display: 'none' } }, 'Weiter');
     put(wrap,
-      el('div', { class: 'eyebrow ex-kind', text: 'Tippe die Formel ein' }),
-      el('p', { class: 'prompt', text: ex.prompt }),
-      ex.diagram ? diagram(ex.diagram, { small: true }) : null,
-      grid,
-      el('div', { class: 'hint-line small muted' }, 'Formel für ', el('b', { text: ex.target }), ex.fill ? ' · herunterziehbar bis ' + ex.fill.split(':')[1] : '', ' · Zellen antippen fügt sie ein'),
-      fi.box, fbSlot, el('div', { class: 'row-btns' }, btnSol, btnCheck, btnNext));
+      el('div', { class: 'ex-a' },
+        el('div', { class: 'eyebrow ex-kind', text: 'Tippe die Formel ein' }),
+        el('p', { class: 'prompt', text: ex.prompt }),
+        ex.diagram ? diagram(ex.diagram, { small: true }) : null,
+        grid,
+        el('div', { class: 'hint-line small muted' }, 'Formel für ', el('b', { text: ex.target }),
+          touchFirst ? ' · Zelle antippen fügt sie ein, am blauen Punkt ziehen = Bereich' : ' · Zelle anklicken fügt sie ein, darüberziehen = Bereich'),
+        ex.fill ? el('div', { class: 'hint-line small muted' }, el('span', { class: 'grab-ic', 'aria-hidden': 'true' }), fillHint(ex.target, ex.fill)) : null),
+      el('div', { class: 'ex-b' }, fi.box, fbSlot, el('div', { class: 'row-btns' }, btnSol, btnCheck, btnNext)));
     function check() {
       if (closed) return;
       const r = Checker.checkFormula(ex, fi.value(), { attempt: attempts + 1 });
@@ -1102,6 +1225,7 @@
       if (r.status === 'richtig') {
         solved = true;
         closed = true;
+        grid.api.lock();
         fbSlot.appendChild(el('div', { class: 'solution' }, el('span', { class: 'small muted', text: 'Musterlösung' }), formulaBox(ex.solution), ex.explain ? el('p', { class: 'small', text: ex.explain }) : null));
         btnCheck.style.display = 'none';
         btnSol.style.display = 'none';
@@ -1118,6 +1242,7 @@
       shown = true;
       closed = true;
       showResult(ex.solution, 'richtig');
+      grid.api.lock();
       fbSlot.innerHTML = '';
       fbSlot.appendChild(el('div', { class: 'solution' }, el('span', { class: 'small muted', text: 'Musterlösung' }), formulaBox(ex.solution), ex.explain ? el('p', { class: 'small', text: ex.explain }) : null,
         el('p', { class: 'small muted', text: 'Die Aufgabe kommt am Ende der Runde nochmal.' })));
@@ -1137,6 +1262,7 @@
     return wrap;
   }
   function optionNode(o) {
+    if (o.img) return figure(o.img, { small: true });
     if (o.d) return diagram(o.d, { small: true });
     if (o.f) return formulaBox(o.f);
     return el('span', { text: o.t });
@@ -1150,9 +1276,10 @@
     const btnNext = el('button', { class: 'btn primary', style: { display: 'none' } }, 'Weiter');
     let outcome = null, mid = null;
     const gap = ex.text ? el('span', { class: 'gap' }, '…') : null;
-    const list = el('div', { class: 'options' + (ex.text ? ' words' : '') });
+    const imgOpts = opts.every((o) => o.img);
+    const list = el('div', { class: 'options' + (ex.text ? ' words' : '') + (imgOpts ? ' imgs' : '') });
     opts.forEach((o, i) => {
-      const b = el('button', { class: 'option' + (o.d ? ' has-diagram' : '') }, optKey(i), el('span', { class: 'opt-body' }, optionNode(o)));
+      const b = el('button', { class: 'option' + (o.d ? ' has-diagram' : '') + (o.img ? ' has-img' : '') }, optKey(i), el('span', { class: 'opt-body' }, optionNode(o)));
       b.addEventListener('click', () => {
         if (outcome) return;
         outcome = o.ok ? 'first' : 'wrong';
@@ -1169,9 +1296,16 @@
       list.appendChild(b);
     });
     btnNext.addEventListener('click', () => done(outcome, mid ? [mid] : []));
-    put(wrap, el('div', { class: 'eyebrow ex-kind', text: ex.text ? 'Welches Wort passt in die Lücke?' : ex.choose ? 'Welche Formel ist richtig?' : 'Wähle die richtige Antwort' }),
-      el('p', { class: 'prompt', text: ex.prompt }), ex.text ? el('section', { class: 'card gap-card' }, gapSentence(ex.text, gap)) : null, ex.formula ? formulaBox(ex.formula, 'big') : null, ex.diagram ? diagram(ex.diagram, { small: true }) : null,
-      ex.sheet ? sheetGrid(ex.sheet, { target: ex.target, fill: ex.fill, maxHeight: '36vh' }) : null, list, fbSlot, el('div', { class: 'row-btns' }, btnNext));
+    const de = langOf(ex) === 'de';
+    const kind = ex.text ? (de ? 'Welcher Begriff passt?' : 'Welches Wort passt in die Lücke?') : ex.choose ? 'Welche Formel ist richtig?' : imgOpts ? 'Wähle das richtige Bild' : 'Wähle die richtige Antwort';
+    const material = [el('div', { class: 'eyebrow ex-kind', text: kind }),
+      el('p', { class: 'prompt', text: ex.prompt }), ex.img ? figure(ex.img, { hl: ex.hl }) : null,
+      ex.text ? el('section', { class: 'card gap-card' }, gapSentence(ex.text, gap, langOf(ex))) : null, ex.formula ? formulaBox(ex.formula, 'big') : null, ex.diagram ? diagram(ex.diagram, { small: true }) : null,
+      ex.sheet ? sheetGrid(ex.sheet, { target: ex.target, fill: ex.fill, maxHeight: '36vh' }) : null];
+    const answer = [list, fbSlot, el('div', { class: 'row-btns' }, btnNext)];
+    // mit Tabelle, Struktogramm oder Bild: auf breiten Bildschirmen links das Material, rechts die Antworten
+    if (ex.sheet || ex.diagram || ex.img) { wrap.classList.add('split'); put(wrap, el('div', { class: 'ex-a' }, material), el('div', { class: 'ex-b' }, answer)); }
+    else put(wrap, ...material, ...answer);
     return wrap;
   }
   function viewErgebnis(ex, done) {
@@ -1204,10 +1338,11 @@
       btnCheck.style.display = 'none';
       btnNext.style.display = '';
     }
-    put(wrap, el('div', { class: 'eyebrow ex-kind', text: 'Was rechnet Excel aus?' }),
-      el('p', { class: 'prompt', text: ex.prompt }), sheetGrid(ex.sheet, { target: ex.target, maxHeight: '40vh' }),
-      el('div', { class: 'f-line static' }, el('span', { class: 'fx', text: ex.target }), formulaBox(ex.formula)),
-      el('label', { class: 'v-label' }, 'Was zeigt Excel in ' + ex.target + '?', input), fbSlot, el('div', { class: 'row-btns' }, btnCheck, btnNext));
+    wrap.classList.add('split');
+    put(wrap, el('div', { class: 'ex-a' }, el('div', { class: 'eyebrow ex-kind', text: 'Was rechnet Excel aus?' }),
+      el('p', { class: 'prompt', text: ex.prompt }), sheetGrid(ex.sheet, { target: ex.target, maxHeight: '40vh' })),
+    el('div', { class: 'ex-b' }, el('div', { class: 'f-line static' }, el('span', { class: 'fx', text: ex.target }), formulaBox(ex.formula)),
+      el('label', { class: 'v-label' }, 'Was zeigt Excel in ' + ex.target + '?', input), fbSlot, el('div', { class: 'row-btns' }, btnCheck, btnNext)));
     return wrap;
   }
   function viewOrdnen(ex, done) {
@@ -1221,33 +1356,40 @@
     const btnNext = el('button', { class: 'btn primary', style: { display: 'none' } }, 'Weiter');
     let outcome = null;
     if (ex.long) { answer.classList.add('long'); chips.classList.add('long'); }
+    if (ex.imgs) { answer.classList.add('imgs'); chips.classList.add('imgs'); }
+    // bei Bildern: das Bild, nach dem Prüfen mit Namen darunter
+    const nameOf = (p) => (ex.names ? ex.names[ex.parts.indexOf(p)] : p);
+    const chipBody = (p, named) => (ex.imgs ? [figure(p, { small: true, cls: 'chip-fig' }), named ? el('small', { class: 'chip-name', text: nameOf(p) }) : null] : [p]);
     function draw() {
       answer.innerHTML = '';
       answer.appendChild(el('span', { class: 'order-fix', text: ex.prefix || '' }));
       chosen.forEach((p, k) => {
         if (k) answer.appendChild(el('span', { class: 'order-fix', text: (ex.joiner || '; ').trim() }));
-        answer.appendChild(el('button', { class: 'chip-btn on', onclick: () => { if (outcome) return; chosen.splice(k, 1); draw(); } }, p));
+        const right = outcome && p === ex.parts[k];
+        answer.appendChild(el('button', { class: 'chip-btn on' + (outcome ? (right ? ' right' : ' off') : ''), onclick: () => { if (outcome) return; chosen.splice(k, 1); draw(); } }, ...chipBody(p, !!outcome)));
       });
-      for (let k = chosen.length; k < ex.parts.length; k++) { if (k) answer.appendChild(el('span', { class: 'order-fix', text: (ex.joiner || '; ').trim() })); answer.appendChild(el('span', { class: 'slot' })); }
+      for (let k = chosen.length; k < ex.parts.length; k++) { if (k) answer.appendChild(el('span', { class: 'order-fix', text: (ex.joiner || '; ').trim() })); answer.appendChild(el('span', { class: 'slot' + (ex.imgs ? ' img' : '') })); }
       answer.appendChild(el('span', { class: 'order-fix', text: ex.suffix || '' }));
       chips.innerHTML = '';
+      if (outcome && ex.imgs) return;
       pool.forEach((p) => {
         const used = chosen.includes(p);
-        chips.appendChild(el('button', { class: 'chip-btn', disabled: used || !!outcome, onclick: () => { if (chosen.length < ex.parts.length) { chosen.push(p); draw(); } } }, p));
+        chips.appendChild(el('button', { class: 'chip-btn' + (used ? ' used' : ''), disabled: used || !!outcome, onclick: () => { if (chosen.length < ex.parts.length) { chosen.push(p); draw(); } } }, ...chipBody(p, false)));
       });
     }
     function check() {
-      if (chosen.length < ex.parts.length) { toast('Wähle zuerst alle Teile aus.'); return; }
+      if (chosen.length < ex.parts.length) { toast(ex.imgs ? 'Wähle zuerst alle Bilder aus.' : 'Wähle zuerst alle Teile aus.'); return; }
       const ok = chosen.every((p, k) => p === ex.parts[k]);
       outcome = ok ? 'first' : 'wrong';
-      fbSlot.appendChild(feedbackBox({ status: ok ? 'richtig' : 'falsch', title: ok ? 'Richtig' : 'Nicht ganz', msgs: (ok ? [] : ['Richtig: ' + (ex.prefix || '') + ex.parts.join((ex.joiner || '; ')) + (ex.suffix || '')]).concat(ex.explain ? [ex.explain] : []) }));
+      const solution = ex.imgs ? ex.names.join(' → ') : (ex.prefix || '') + ex.parts.join((ex.joiner || '; ')) + (ex.suffix || '');
+      fbSlot.appendChild(feedbackBox({ status: ok ? 'richtig' : 'falsch', title: ok ? 'Richtig' : 'Nicht ganz', msgs: (ok ? [] : ['Richtig: ' + solution]).concat(ex.explain ? [ex.explain] : []) }));
       btnCheck.style.display = 'none';
       btnNext.style.display = '';
       draw();
     }
     btnNext.addEventListener('click', () => done(outcome, []));
     draw();
-    put(wrap, el('div', { class: 'eyebrow ex-kind', text: 'Bring die Teile in die richtige Reihenfolge' }),
+    put(wrap, el('div', { class: 'eyebrow ex-kind', text: ex.imgs ? 'Tippe die Bilder der Reihe nach an' : 'Bring die Teile in die richtige Reihenfolge' }),
       el('p', { class: 'prompt', text: ex.prompt }), answer, chips, fbSlot, el('div', { class: 'row-btns' }, btnCheck, btnNext));
     return wrap;
   }
@@ -1259,9 +1401,328 @@
       el('button', { class: 'btn ghost', onclick: () => done('unknown', []) }, 'Noch nicht gewusst'),
       el('button', { class: 'btn primary', onclick: () => done('known', []) }, 'Gewusst'));
     btnShow.addEventListener('click', () => { back.style.display = ''; rate.style.display = ''; btnShow.style.display = 'none'; });
-    put(wrap, el('div', { class: 'card flash-front' }, el('div', { class: 'eyebrow', text: 'Frage' }), el('p', { class: 'big-q', text: ex.front })),
+    put(wrap, el('div', { class: 'card flash-front' }, el('div', { class: 'eyebrow', text: 'Frage' }), el('p', { class: 'big-q', text: ex.front }), ex.img ? figure(ex.img) : null),
       el('p', { class: 'small muted', text: 'Überlege dir die Antwort, bevor du sie aufdeckst.' }), btnShow, back, rate);
     return wrap;
+  }
+
+  // =====================================================================
+  // Bilder (Biologie): eigene SVG-Zeichnungen aus dem Kurs. Teile mit data-part lassen sich hervorheben und antippen.
+  // =====================================================================
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const partsOf = (svg) => [...svg.querySelectorAll('[data-part]')];
+  // erst wenn das Bild auf der Seite ist (getBBox braucht ein sichtbares Bild)
+  function afterLayout(node, fn, tries) {
+    tries = tries === undefined ? 40 : tries;
+    requestAnimationFrame(() => { if (node.isConnected && node.getBoundingClientRect().width) fn(); else if (tries > 0) afterLayout(node, fn, tries - 1); });
+  }
+  function ringPart(svg, g, cls) {
+    const t = g.querySelector('.main') || g;
+    let b;
+    try { b = t.getBBox(); } catch (e) { return null; }
+    if (!b || !b.width) return null;
+    const vb = svg.viewBox && svg.viewBox.baseVal;
+    // große Teile (Zellmembran, Zellplasma …) nicht umkreisen: Sie sind durch das Abdunkeln der anderen schon gut zu sehen
+    if (vb && vb.width && b.width * b.height > vb.width * vb.height * 0.3) return null;
+    const pad = 6;
+    const e = document.createElementNS(SVGNS, 'ellipse');
+    e.setAttribute('cx', b.x + b.width / 2); e.setAttribute('cy', b.y + b.height / 2);
+    e.setAttribute('rx', b.width / 2 + pad); e.setAttribute('ry', b.height / 2 + pad);
+    e.setAttribute('class', 'ring' + (cls ? ' ' + cls : ''));
+    svg.appendChild(e);
+    return e;
+  }
+  function clearMarks(svg) {
+    svg.querySelectorAll('.ring').forEach((r) => r.remove());
+    partsOf(svg).forEach((g) => g.classList.remove('hl', 'dimmed', 'hit-bad'));
+  }
+  // Teile hervorheben: Ring darum, alle anderen Teile blasser
+  function highlightParts(svg, ids, cls) {
+    clearMarks(svg);
+    const all = partsOf(svg);
+    const hl = all.filter((g) => ids.includes(g.dataset.part));
+    if (!hl.length) return;
+    const isAnc = (g) => hl.some((h) => h !== g && g.contains(h));
+    hl.forEach((g) => g.classList.add('hl'));
+    all.forEach((g) => {
+      if (hl.includes(g) || isAnc(g) || hl.some((h) => h.contains(g))) return;
+      const pp = g.parentElement && g.parentElement.closest('[data-part]');
+      if (pp && !isAnc(pp)) return;
+      g.classList.add('dimmed');
+    });
+    const seen = new Set();
+    hl.forEach((g) => { if (!seen.has(g.dataset.part)) { seen.add(g.dataset.part); ringPart(svg, g, cls); } });
+  }
+  // falsch angetippt: kurz rot aufblinken, das Bild bleibt sonst normal
+  function flashPart(svg, g) {
+    clearMarks(svg);
+    g.classList.add('hit-bad');
+    const r = ringPart(svg, g, 'bad');
+    setTimeout(() => { g.classList.remove('hit-bad'); if (r) r.remove(); }, 1300);
+  }
+  // beschriftete Ansicht: Nummern im Bild, Liste darunter; antippen hebt den Teil hervor
+  function labelParts(svg) {
+    const list = partsOf(svg).filter((g) => g.dataset.ax);
+    if (!list.length) return null;
+    const marks = document.createElementNS(SVGNS, 'g');
+    marks.setAttribute('class', 'marks');
+    const legend = el('ol', { class: 'fig-legend' });
+    const seen = new Map();
+    const pick = (pid) => {
+      const li = legend.children[seen.get(pid) - 1];
+      const on = li && li.classList.contains('on');
+      [...legend.children].forEach((x) => x.classList.remove('on'));
+      if (on || !li) { clearMarks(svg); return; }
+      li.classList.add('on');
+      highlightParts(svg, [pid]);
+    };
+    list.forEach((g) => {
+      if (seen.has(g.dataset.part)) return;
+      const n = seen.size + 1;
+      seen.set(g.dataset.part, n);
+      const x = +g.dataset.ax, y = +g.dataset.ay;
+      const m = document.createElementNS(SVGNS, 'g');
+      m.setAttribute('class', 'mark');
+      m.innerHTML = '<circle cx="' + x + '" cy="' + y + '" r="9.5"/><text x="' + x + '" y="' + (y + 4.2) + '" text-anchor="middle">' + n + '</text>';
+      marks.appendChild(m);
+      const pid = g.dataset.part;
+      legend.appendChild(el('li', { onclick: () => pick(pid) }, el('b', { text: String(n) }), el('span', { text: g.dataset.name })));
+    });
+    svg.appendChild(marks);
+    svg.addEventListener('click', (ev) => {
+      const g = ev.target.closest && ev.target.closest('[data-part]');
+      if (g && seen.has(g.dataset.part)) pick(g.dataset.part);
+    });
+    return legend;
+  }
+  // opts: hl (Teil oder Liste), labels (Nummern + Liste), small, cls
+  function figure(key, opts) {
+    opts = opts || {};
+    const src = IMAGES.get(key);
+    const fig = el('div', { class: 'fig' + (opts.small ? ' small' : '') + (opts.cls ? ' ' + opts.cls : '') });
+    if (!src) { fig.appendChild(el('span', { class: 'small muted', text: 'Bild fehlt' })); return fig; }
+    fig.innerHTML = src;
+    const svg = fig.querySelector('svg');
+    svg.setAttribute('focusable', 'false');
+    fig.svg = svg;
+    if (opts.labels) { const lg = labelParts(svg); if (lg) { fig.classList.add('labeled'); fig.appendChild(lg); } }
+    if (opts.hl) { const ids = [].concat(opts.hl); afterLayout(fig, () => highlightParts(svg, ids)); }
+    return fig;
+  }
+  // welcher Teil wurde angetippt? Kleine Ziele (Ribosomen, Vesikel …) zählen schon, wenn man knapp daneben tippt.
+  function partAt(svg, ev, wanted) {
+    const direct = ev.target.closest && ev.target.closest('[data-part]');
+    if (direct && wanted.includes(direct.dataset.part)) return direct;
+    const x = ev.clientX, y = ev.clientY;
+    for (const g of partsOf(svg)) {
+      if (!wanted.includes(g.dataset.part)) continue;
+      for (const n of g.querySelectorAll('circle, ellipse, rect, path, polyline, line, polygon')) {
+        const r = n.getBoundingClientRect();
+        if (!r.width || r.width > 34 || r.height > 34) continue;
+        const dx = Math.max(r.left - x, 0, x - r.right), dy = Math.max(r.top - y, 0, y - r.bottom);
+        if (Math.hypot(dx, dy) <= 14) return g;
+      }
+    }
+    return direct;
+  }
+  const partName = (svg, pid) => { const g = svg && svg.querySelector('[data-part="' + pid + '"]'); return g ? g.dataset.name : pid; };
+
+  // ---------- im Bild antippen ----------
+  function viewBild(ex, done) {
+    const wrap = el('div', { class: 'ex ex-bild' });
+    const fig = figure(ex.img, { cls: 'tap' });
+    const svg = fig.svg;
+    const accept = ex.accept || [ex.target];
+    const fbSlot = el('div');
+    let attempts = 0, outcome = null;
+    const btnNext = el('button', { class: 'btn primary', style: { display: 'none' }, onclick: () => done(outcome, []) }, 'Weiter');
+    if (svg) svg.addEventListener('click', (ev) => {
+      if (outcome) return;
+      const g = partAt(svg, ev, accept);
+      if (!g) { toast('Tippe direkt auf einen Teil im Bild.'); return; }
+      attempts++;
+      fbSlot.innerHTML = '';
+      if (accept.includes(g.dataset.part)) {
+        outcome = attempts === 1 ? 'first' : 'fast';
+        highlightParts(svg, [g.dataset.part], 'ok');
+        fbSlot.appendChild(feedbackBox({ status: 'richtig', title: 'Richtig: ' + g.dataset.name, msgs: ex.explain ? [ex.explain] : [] }));
+      } else if (attempts < 2) {
+        flashPart(svg, g);
+        fbSlot.appendChild(feedbackBox({ status: 'falsch', title: 'Das ist: ' + g.dataset.name, msgs: ['Versuch es noch einmal.'] }));
+        return;
+      } else {
+        outcome = 'wrong';
+        highlightParts(svg, [ex.target], 'ok');
+        fbSlot.appendChild(feedbackBox({ status: 'falsch', title: 'Das war: ' + g.dataset.name, msgs: ['Richtig ist der markierte Teil: ' + partName(svg, ex.target) + '.'].concat(ex.explain ? [ex.explain] : []) }));
+      }
+      btnNext.style.display = '';
+      fbSlot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+    put(wrap, el('div', { class: 'eyebrow ex-kind', text: 'Tippe im Bild' }), el('p', { class: 'prompt', text: ex.prompt }), fig, fbSlot, el('div', { class: 'row-btns' }, btnNext));
+    return wrap;
+  }
+
+  // ---------- Tabelle zum Ankreuzen ----------
+  // state: Matrix aus 0/1 (wird verändert); onChange(i, j) nach jedem Antippen
+  function tickTable(ex, state, onChange) {
+    const table = el('table', { class: 'tick-table' + (ex.cols.length === 1 ? ' one' : ''), lang: 'de' });
+    table.appendChild(el('thead', null, el('tr', null, el('th'), ex.cols.map((c) => el('th', { scope: 'col', text: c })))));
+    const body = el('tbody');
+    table.btns = [];
+    table.trs = [];
+    ex.rows.forEach((r, i) => {
+      const tr = el('tr', null, el('th', { scope: 'row', text: r }));
+      table.btns[i] = [];
+      table.trs[i] = tr;
+      ex.cols.forEach((c, j) => {
+        const b = el('button', { class: 'tick' + (state[i][j] ? ' on' : ''), 'aria-pressed': state[i][j] ? 'true' : 'false', 'aria-label': r + ': ' + c }, icon('check'));
+        b.addEventListener('click', () => {
+          if (table.locked) return;
+          state[i][j] = state[i][j] ? 0 : 1;
+          b.classList.toggle('on', !!state[i][j]);
+          b.setAttribute('aria-pressed', state[i][j] ? 'true' : 'false');
+          tr.classList.remove('bad');
+          if (onChange) onChange(i, j);
+        });
+        table.btns[i][j] = b;
+        tr.appendChild(el('td', null, b));
+      });
+      body.appendChild(tr);
+    });
+    table.appendChild(body);
+    // Lösung zeigen: grün = richtig angekreuzt oder fehlend, rot = zu viel
+    table.reveal = () => {
+      table.locked = true;
+      ex.rows.forEach((r, i) => ex.cols.forEach((c, j) => {
+        const b = table.btns[i][j], want = !!ex.answer[i][j], got = !!state[i][j];
+        b.classList.toggle('sol', want && !got);
+        b.classList.toggle('x', got && !want);
+        b.classList.toggle('good', got && want);
+      }));
+    };
+    return table;
+  }
+  function viewTabelle(ex, done) {
+    const wrap = el('div', { class: 'ex ex-tabelle' });
+    const state = ex.rows.map(() => ex.cols.map(() => 0));
+    let attempts = 0, outcome = null;
+    const table = tickTable(ex, state);
+    const fbSlot = el('div');
+    const btnCheck = el('button', { class: 'btn primary', onclick: () => check() }, 'Prüfen');
+    const btnNext = el('button', { class: 'btn primary', style: { display: 'none' }, onclick: () => done(outcome, []) }, 'Weiter');
+    function check() {
+      if (outcome) return;
+      attempts++;
+      const bad = ex.rows.map((_, i) => ex.answer[i].some((v, j) => v !== state[i][j]));
+      fbSlot.innerHTML = '';
+      if (!bad.some(Boolean)) {
+        outcome = attempts === 1 ? 'first' : 'fast';
+        table.reveal();
+        fbSlot.appendChild(feedbackBox({ status: 'richtig', title: 'Richtig', msgs: ex.explain ? [ex.explain] : [] }));
+      } else if (attempts < 2) {
+        bad.forEach((b, i) => table.trs[i].classList.toggle('bad', b));
+        const n = bad.filter(Boolean).length;
+        fbSlot.appendChild(feedbackBox({ status: 'falsch', title: 'Noch nicht ganz', msgs: [n === 1 ? 'In der rot markierten Zeile stimmt etwas nicht.' : 'In den ' + n + ' rot markierten Zeilen stimmt etwas nicht.'] }));
+        btnCheck.textContent = 'Nochmal prüfen';
+        return;
+      } else {
+        outcome = 'wrong';
+        table.trs.forEach((tr) => tr.classList.remove('bad'));
+        table.reveal();
+        fbSlot.appendChild(feedbackBox({ status: 'falsch', title: 'Hier die Lösung', msgs: ['Grün = richtig. Rot durchgestrichen = gehört nicht hin.'].concat(ex.explain ? [ex.explain] : []) }));
+      }
+      btnCheck.style.display = 'none';
+      btnNext.style.display = '';
+      fbSlot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+    put(wrap, el('div', { class: 'eyebrow ex-kind', text: 'Kreuze in der Tabelle an' }), el('p', { class: 'prompt', text: ex.prompt }),
+      el('div', { class: 'tick-wrap' }, table), fbSlot, el('div', { class: 'row-btns' }, btnCheck, btnNext));
+    return wrap;
+  }
+
+  // ---------- eigene Antwort (Deutsch): die App sucht die wichtigen Fachbegriffe ----------
+  const normText = (x) => ' ' + String(x || '').toLowerCase().replace(/ß/g, 'ss').replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/[^a-z0-9]+/g, ' ').trim() + ' ';
+  const normKey = (w) => String(w).toLowerCase().replace(/ß/g, 'ss').replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/[^a-z0-9]+/g, ' ');
+  function keyCheck(text, ex) {
+    const n = normText(text);
+    const res = ex.keys.map((k) => {
+      const hits = k.any.filter((w) => n.includes(normKey(w)));
+      return { label: k.label, ok: hits.length >= (k.min || 1) };
+    });
+    const found = res.filter((r) => r.ok).length;
+    const need = Math.min(ex.need || ex.keys.length, ex.keys.length);
+    return { res, found, need, ok: found >= need };
+  }
+  function viewAntwort(ex, done) {
+    let attempts = 0, outcome = null;
+    const wrap = el('div', { class: 'ex ex-antwort' });
+    const ta = el('textarea', { class: 'w-input', rows: 5, placeholder: 'Schreibe hier deine Antwort …', lang: 'de', spellcheck: 'true', autocapitalize: 'sentences' });
+    const fbSlot = el('div');
+    const btnCheck = el('button', { class: 'btn primary', onclick: () => check() }, 'Prüfen');
+    const btnSol = el('button', { class: 'btn ghost', style: { display: 'none' }, onclick: () => finish(false) }, 'Musterlösung');
+    const btnNext = el('button', { class: 'btn primary', style: { display: 'none' }, onclick: () => done(outcome, []) }, 'Weiter');
+    function finish(allOk) {
+      outcome = allOk ? (attempts === 1 ? 'first' : 'fast') : 'shown';
+      fbSlot.appendChild(el('div', { class: 'solution' }, el('span', { class: 'small muted', text: 'Musterlösung' }), el('p', { class: 'model', lang: 'de', text: ex.model }),
+        ex.explain ? el('p', { class: 'small', text: ex.explain }) : null));
+      btnCheck.style.display = 'none';
+      btnSol.style.display = 'none';
+      btnNext.style.display = '';
+      ta.readOnly = true;
+    }
+    function check() {
+      if (TextCheck.words(ta.value) < 3) { toast('Schreib zuerst ein paar Wörter.'); return; }
+      attempts++;
+      const r = keyCheck(ta.value, ex);
+      fbSlot.innerHTML = '';
+      fbSlot.appendChild(el('div', { class: 'feedback ' + (r.ok ? 'ok' : 'warn') },
+        el('b', { class: 'fb-title' }, fbIcon(r.ok ? 'ok' : 'warn'), r.ok ? 'Die wichtigen Punkte sind drin' : 'Es fehlt noch etwas – schau dir die roten Punkte an'),
+        checklistEl(r.res), r.need < ex.keys.length ? el('p', { class: 'small', text: 'Nötig: ' + r.need + ' von ' + ex.keys.length + ' Punkten.' }) : null));
+      if (r.ok) finish(true);
+      else { btnCheck.textContent = 'Nochmal prüfen'; btnSol.style.display = ''; }
+      fbSlot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+    put(wrap, el('div', { class: 'eyebrow ex-kind', text: 'Schreibe selbst' }), el('p', { class: 'prompt', text: ex.prompt }),
+      ex.img ? figure(ex.img) : null,
+      el('section', { class: 'card task-card' }, el('b', { text: ex.task })), ta, fbSlot, el('div', { class: 'row-btns' }, btnSol, btnCheck, btnNext));
+    return wrap;
+  }
+
+  // ---------- alle Bilder eines Fachs ----------
+  function viewGallery(s) {
+    const list = el('div', { class: 'gallery' }, (s.gallery || []).map((g, i) => el('a', { class: 'gal-item', href: '#/f/' + s.id + '/bilder/' + i },
+      figure(g.img, { small: true }), el('b', { text: g.title }))));
+    screen({ title: 'Alle Bilder', sub: s.name, back: pathHash(s), color: s.color },
+      el('p', { class: 'muted', text: 'Tippe auf ein Bild, um es groß zu sehen. Bei Zellen und Organellen gibt es Nummern mit Namen.' }), list);
+  }
+  function viewImage(s, i) {
+    const gal = s.gallery || [];
+    const g = gal[i];
+    if (!g) return viewGallery(s);
+    const to = (k) => location.replace('#/f/' + s.id + '/bilder/' + k);
+    screen({ title: g.title, sub: 'Bild ' + (i + 1) + ' von ' + gal.length, back: '#/f/' + s.id + '/bilder', color: s.color },
+      el('section', { class: 'card fig-card' }, figure(g.img, { labels: g.labels })),
+      g.labels ? el('p', { class: 'small muted', text: 'Tippe auf einen Namen oder auf einen Teil im Bild – er wird hervorgehoben.' }) : null,
+      el('div', { class: 'row-btns' },
+        el('button', { class: 'btn ghost', disabled: i === 0, onclick: () => to(i - 1) }, 'Zurück'),
+        el('button', { class: 'btn primary', disabled: i === gal.length - 1, onclick: () => to(i + 1) }, 'Weiter')));
+  }
+  // ---------- Checkliste zur Klassenarbeit ----------
+  function viewChecklist(s) {
+    const rows = (s.checklist || []).map((c) => {
+      const t = topicById(c.topic);
+      const ts = t ? topicStars(t) : { got: 0, max: 0 };
+      const sure = ts.max > 0 && ts.got >= Math.ceil(ts.max * 2 / 3);
+      return el('a', { class: 'topic-row check-row', href: '#/t/' + c.topic, style: { '--c': t ? colorOf(t) : s.color } },
+        el('span', { class: 'ck-box' + (sure ? ' on' : '') }, sure ? icon('check') : null),
+        el('span', { class: 'tr-text' }, el('b', { text: c.text.replace(/^…\s*/, '') }),
+          el('span', { class: 'small muted', text: c.ab + (t ? ' · ' + t.title : '') + ' · ★ ' + ts.got + '/' + ts.max })),
+        icon('chev', 'chev'));
+    });
+    screen({ title: 'Checkliste', sub: s.name + ' · Klassenarbeit', back: pathHash(s), color: s.color },
+      el('p', { class: 'muted', text: 'Ich kann … – das kommt in der Klassenarbeit dran. Der Haken erscheint ab 6 von 9 Sternen im Thema. Tippe auf einen Punkt, um ihn zu üben.' }),
+      el('section', { class: 'topic-list' }, rows),
+      s.checkNote ? el('p', { class: 'small muted', text: s.checkNote }) : null);
   }
 
   // =====================================================================
@@ -1419,7 +1880,9 @@
   function noteFor(pct) { return pct >= 92 ? 1 : pct >= 81 ? 2 : pct >= 67 ? 3 : pct >= 50 ? 4 : pct >= 30 ? 5 : 6; }
   function viewExams(s) {
     if (examState && examState.submitted) examState = null;
-    const parts = [el('p', { class: 'muted', text: 'Wie in der Klausur: Tabelle mit Werten, gelbe Zellen – du schreibst die Formeln dazu. Mit Zeit, danach Punkte und Note.' })];
+    const sheetExams = (s.exams || []).some((k) => k.sheet);
+    const parts = [el('p', { class: 'muted', text: sheetExams ? 'Wie in der Klausur: Tabelle mit Werten, gelbe Zellen – du schreibst die Formeln dazu. Mit Zeit, danach Punkte und Note.'
+      : 'Wie in der Klassenarbeit: Auswahl, Bilder, Tabellen und eigene Antworten. Mit Zeit, danach Punkte und Note.' })];
     for (const k of s.exams || []) {
       const st = P.exams[k.id];
       parts.push(el('section', { class: 'card exam-item' },
@@ -1434,20 +1897,134 @@
     const s = subjectById(k._subject);
     if (examState && examState.k.id === id && !examState.submitted) return renderExam();
     if (examState && examState.k.id === id && examState.submitted) return renderExamResult();
+    const tips = k.sheet ? ['Gelbe Zellen = hier gehört eine Formel hin. Die Werte zeigen, was herauskommen soll.', 'Tippe auf eine Zelle, um sie in die Formel einzufügen.']
+      : ['Du kannst die Aufgaben in beliebiger Reihenfolge lösen.', 'Bei Schreibaufgaben zählen die wichtigen Fachbegriffe. Danach siehst du eine Musterlösung.'];
     screen({ title: k.title, back: pathHash(s) },
       el('section', { class: 'card' }, el('p', { text: k.intro }),
-        el('ul', { class: 'small' }, el('li', { text: k.tasks.length + ' Aufgaben, ' + examMax(k) + ' Punkte, ' + k.minutes + ' Minuten' }),
-          el('li', { text: 'Gelbe Zellen = hier gehört eine Formel hin. Die Werte zeigen, was herauskommen soll.' }), el('li', { text: 'Tippe auf eine Zelle, um sie in die Formel einzufügen.' }))),
+        el('ul', { class: 'small' }, el('li', { text: k.tasks.length + ' Aufgaben, ' + examMax(k) + ' Punkte, ' + k.minutes + ' Minuten' }), tips.map((x) => el('li', { text: x })))),
       el('button', { class: 'btn primary block', style: { background: s.color }, onclick: () => { examState = { k, answers: {}, end: Date.now() + k.minutes * 60000, submitted: false, active: null }; renderExam(); } }, 'Klausur starten'));
+  }
+  // Zeit läuft: Anzeige oben, bei 0 automatisch abgeben
+  function startExamTimer(timer) {
+    const st = examState;
+    const tick = () => {
+      const left = Math.max(0, st.end - Date.now());
+      const m = Math.floor(left / 60000), sec = Math.floor((left % 60000) / 1000);
+      timer.querySelector('b').textContent = m + ':' + String(sec).padStart(2, '0');
+      timer.classList.toggle('low', left < 5 * 60000);
+      if (left <= 0) { stopExamTimer(); toast('Die Zeit ist um.'); submitExam(); }
+    };
+    stopExamTimer();
+    tick();
+    examTimer = setInterval(tick, 1000);
+  }
+  // Klausur ohne Tabellenblatt (Biologie): jede Aufgabe ist eine Karte
+  function examWidget(t, st, key) {
+    const w = el('div', { class: 'exw' });
+    if (t.img && t.type !== 'bild') w.appendChild(figure(t.img, { hl: t.hl }));
+    if (t.type === 'wahl') {
+      const list = el('div', { class: 'options' + (t.options.every((o) => o.img) ? ' imgs' : '') });
+      t.options.forEach((o, j) => {
+        const b = el('button', { class: 'option' + (st.answers[key] === j ? ' picked' : '') + (o.img ? ' has-img' : '') }, optKey(j), el('span', { class: 'opt-body' }, optionNode(o)));
+        b.addEventListener('click', () => { st.answers[key] = j; [...list.children].forEach((c, q) => c.classList.toggle('picked', q === j)); });
+        list.appendChild(b);
+      });
+      w.appendChild(list);
+    } else if (t.type === 'luecke') {
+      const gap = el('span', { class: 'gap' }, st.answers[key] || '…');
+      const inp = el('input', { type: 'text', class: 'v-input gap-input', placeholder: 'Fachbegriff', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false', lang: 'de', value: st.answers[key] || '' });
+      inp.addEventListener('input', () => { st.answers[key] = inp.value; gap.textContent = inp.value.trim() || '…'; });
+      put(w, el('section', { class: 'card gap-card' }, gapSentence(t.text, gap, 'de')), inp);
+    } else if (t.type === 'bild') {
+      const fig = figure(t.img, { cls: 'tap' });
+      fig.svg.addEventListener('click', (ev) => {
+        const g = partAt(fig.svg, ev, t.accept);
+        if (!g) return;
+        st.answers[key] = g.dataset.part;
+        highlightParts(fig.svg, [g.dataset.part], 'pick');
+      });
+      if (st.answers[key]) afterLayout(fig, () => highlightParts(fig.svg, [st.answers[key]], 'pick'));
+      put(w, fig, el('p', { class: 'small muted', text: 'Tippe auf den Teil im Bild. Du kannst deine Wahl ändern.' }));
+    } else if (t.type === 'ordnen') {
+      st.pools = st.pools || {};
+      const pool = st.pools[key] || (st.pools[key] = shuffle(t.parts));
+      const chosen = st.answers[key] || (st.answers[key] = []);
+      const answer = el('div', { class: 'order-answer long' + (t.imgs ? ' imgs' : '') });
+      const chips = el('div', { class: 'order-pool long' + (t.imgs ? ' imgs' : '') });
+      const body = (p) => (t.imgs ? [figure(p, { small: true, cls: 'chip-fig' })] : [p]);
+      const draw = () => {
+        answer.innerHTML = '';
+        chosen.forEach((p, k) => {
+          if (k) answer.appendChild(el('span', { class: 'order-fix', text: '→' }));
+          answer.appendChild(el('button', { class: 'chip-btn on', onclick: () => { chosen.splice(k, 1); draw(); } }, ...body(p)));
+        });
+        for (let k = chosen.length; k < t.parts.length; k++) { if (k) answer.appendChild(el('span', { class: 'order-fix', text: '→' })); answer.appendChild(el('span', { class: 'slot' + (t.imgs ? ' img' : '') })); }
+        chips.innerHTML = '';
+        pool.forEach((p) => chips.appendChild(el('button', { class: 'chip-btn' + (chosen.includes(p) ? ' used' : ''), disabled: chosen.includes(p), onclick: () => { if (chosen.length < t.parts.length) { chosen.push(p); draw(); } } }, ...body(p))));
+      };
+      draw();
+      put(w, answer, chips);
+    } else if (t.type === 'tabelle') {
+      const state = st.answers[key] || (st.answers[key] = t.rows.map(() => t.cols.map(() => 0)));
+      w.appendChild(el('div', { class: 'tick-wrap' }, tickTable(t, state)));
+    } else if (t.type === 'antwort') {
+      const ta = el('textarea', { class: 'w-input', rows: 4, placeholder: 'Deine Antwort …', lang: 'de', spellcheck: 'true', autocapitalize: 'sentences' });
+      ta.value = st.answers[key] || '';
+      ta.addEventListener('input', () => { st.answers[key] = ta.value; });
+      w.appendChild(ta);
+    }
+    return w;
+  }
+  const half = (x) => Math.round(x * 2) / 2;
+  function scoreTask(t, ans) {
+    if (t.type === 'wahl') { const ok = ans !== undefined && !!(t.options[ans] && t.options[ans].ok); return { p: ok ? t.points : 0, ok }; }
+    if (t.type === 'luecke') { const v = normDe(ans); const ok = !!v && t.answers.some((a) => typoOk(normDe(a), v)); return { p: ok ? t.points : 0, ok }; }
+    if (t.type === 'bild') { const ok = !!ans && t.accept.includes(ans); return { p: ok ? t.points : 0, ok }; }
+    if (t.type === 'ordnen') {
+      const ch = ans || [];
+      const right = ch.length === t.parts.length ? t.parts.filter((p, k) => ch[k] === p).length : 0;
+      return { p: half(t.points * right / t.parts.length), ok: right === t.parts.length };
+    }
+    if (t.type === 'tabelle') {
+      const m = ans || [];
+      const right = t.answer.filter((row, i) => row.every((v, j) => v === ((m[i] || [])[j] || 0))).length;
+      return { p: half(t.points * right / t.answer.length), ok: right === t.answer.length, right };
+    }
+    if (t.type === 'antwort') { const r = keyCheck(ans || '', t); return { p: half(t.points * Math.min(r.found, r.need) / r.need), ok: r.ok, r }; }
+    return { p: 0, ok: false };
+  }
+  function renderExamPlain() {
+    const st = examState, k = st.k;
+    const timer = el('span', { class: 'timer' }, icon('clock'), el('b', { text: '' }));
+    const submit = el('button', { class: 'btn small-btn', onclick: () => { if (confirm('Klausur jetzt abgeben?')) submitExam(); } }, 'Abgeben');
+    const main = screen({ title: k.title, right: el('div', { class: 'top-right' }, timer, submit), cls: 'exam plain' });
+    k.tasks.forEach((t, i) => {
+      const key = 't' + i;
+      main.appendChild(el('section', { class: 'card task' },
+        el('div', { class: 'task-head' }, el('span', { class: 'cell-chip', text: 'Aufgabe ' + (i + 1) }), el('span', { class: 'small muted', text: t.points + ' P' })),
+        el('p', { text: t.prompt }), examWidget(t, st, key)));
+    });
+    main.appendChild(el('button', { class: 'btn primary block', onclick: () => { if (confirm('Klausur jetzt abgeben?')) submitExam(); } }, 'Abgeben'));
+    startExamTimer(timer);
   }
   function renderExam() {
     const st = examState, k = st.k;
+    if (!k.sheet) return renderExamPlain();
     const timer = el('span', { class: 'timer' }, icon('clock'), el('b', { text: '' }));
     const submit = el('button', { class: 'btn small-btn', onclick: () => { if (confirm('Klausur jetzt abgeben?')) submitExam(); } }, 'Abgeben');
     const main = screen({ title: k.title, right: el('div', { class: 'top-right' }, timer, submit), cls: 'exam' });
     const inputs = {};
-    const grid = sheetGrid(k.sheet, { showTarget: 'value', maxHeight: '42vh', onCell: (a) => { if (st.active && inputs[st.active]) inputs[st.active].insertRef(a); } });
-    main.appendChild(grid);
+    // Zelle antippen oder Bereich ziehen: kommt in das Formelfeld, in dem man gerade ist
+    const pick = (a) => {
+      if (st.active && inputs[st.active]) { inputs[st.active].insertRef(a); return true; }
+      toast('Tippe zuerst in ein Formelfeld.');
+      return false;
+    };
+    const grid = sheetGrid(k.sheet, { showTarget: 'value', maxHeight: '42vh', onCell: pick, onRange: pick });
+    // breite Bildschirme: Tabelle links (bleibt stehen), Aufgaben rechts
+    const taskList = el('div', { class: 'exam-tasks' });
+    main.appendChild(el('div', { class: 'exam-sheet' }, grid));
+    main.appendChild(taskList);
     k.tasks.forEach((t, i) => {
       const key = t.cell || ('mc' + i);
       const head = el('div', { class: 'task-head' }, el('span', { class: 'cell-chip', text: t.cell || ('Aufgabe ' + (i + 1)) }), el('span', { class: 'small muted', text: t.points + ' P' }));
@@ -1462,43 +2039,43 @@
         });
         card.appendChild(list);
       } else {
-        const fi = formulaInput({ fns: FNS.exam, value: st.answers[key] || '' });
+        const fi = formulaInput({ fns: FNS.exam, value: st.answers[key] || '', onPointEnd: () => grid.api.clearSel() });
         fi.box.classList.add('compact');
         fi.input.addEventListener('focus', () => {
+          if (st.active !== key) grid.api.clearSel();
           st.active = key;
           Object.values(inputs).forEach((x) => x.box.classList.add('compact'));
           fi.box.classList.remove('compact');
           grid.querySelectorAll('td.focus').forEach((td) => td.classList.remove('focus'));
-          const td = grid.querySelector('td[data-a="' + t.cell + '"]');
-          if (td) {
-            td.classList.add('focus');
-            const wr = grid.getBoundingClientRect(), tr = td.getBoundingClientRect();
-            grid.scrollTo({ left: grid.scrollLeft + (tr.left - wr.left) - wr.width / 2 + tr.width / 2, top: grid.scrollTop + (tr.top - wr.top) - wr.height / 2 + tr.height / 2, behavior: 'smooth' });
-          }
+          const td = grid.api.cell(t.cell);
+          if (td) { td.classList.add('focus'); centerCell(grid, td); }
         });
         fi.input.addEventListener('input', () => { st.answers[key] = fi.value(); });
         inputs[key] = fi;
         card.appendChild(fi.box);
       }
-      main.appendChild(card);
+      taskList.appendChild(card);
     });
-    main.appendChild(el('button', { class: 'btn primary block', onclick: () => { if (confirm('Klausur jetzt abgeben?')) submitExam(); } }, 'Abgeben'));
-    const tick = () => {
-      const left = Math.max(0, st.end - Date.now());
-      const m = Math.floor(left / 60000), sec = Math.floor((left % 60000) / 1000);
-      timer.querySelector('b').textContent = m + ':' + String(sec).padStart(2, '0');
-      timer.classList.toggle('low', left < 5 * 60000);
-      if (left <= 0) { stopExamTimer(); toast('Die Zeit ist um.'); submitExam(); }
-    };
-    stopExamTimer();
-    tick();
-    examTimer = setInterval(tick, 1000);
+    taskList.appendChild(el('button', { class: 'btn primary block', onclick: () => { if (confirm('Klausur jetzt abgeben?')) submitExam(); } }, 'Abgeben'));
+    startExamTimer(timer);
   }
   function submitExam() {
     const st = examState, k = st.k;
     stopExamTimer();
     let pts = 0;
-    st.results = k.tasks.map((t, i) => {
+    if (!k.sheet) {
+      st.results = k.tasks.map((t, i) => {
+        const key = 't' + i;
+        const ans = st.answers[key];
+        const r = scoreTask(t, ans);
+        pts += r.p;
+        if (!r.ok) {
+          if (t.type === 'wahl' && ans !== undefined && t.options[ans] && t.options[ans].mid) recordMistakes([t.options[ans].mid], null);
+          if (t.type === 'luecke') { const w = (t.wrong || []).find((x) => x.mid && normDe(x.t) === normDe(ans)); if (w) recordMistakes([w.mid], null); }
+        }
+        return Object.assign({ t, key, ans, choice: t.type === 'wahl' ? ans : undefined }, r);
+      });
+    } else st.results = k.tasks.map((t, i) => {
       const key = t.cell || ('mc' + i);
       if (t.type === 'wahl') {
         const j = st.answers[key];
@@ -1537,6 +2114,34 @@
     renderExamResult();
     checkRewards();
   }
+  // Auswertung einer Aufgabe ohne Tabellenblatt: deine Antwort, die Lösung
+  function examResultDetail(card, t, res, full) {
+    const line = (label, node) => el('div', { class: 'small res-line' }, el('b', { text: label + ' ' }), node);
+    if (t.type === 'luecke') {
+      card.appendChild(line('Deine Antwort:', el('span', { text: (res.ans || '').trim() || '(leer)' })));
+      if (!full) card.appendChild(line('Richtig:', el('span', { text: t.answers[0] })));
+    } else if (t.type === 'bild') {
+      const fig = figure(t.img, { small: true });
+      afterLayout(fig, () => highlightParts(fig.svg, [t.target], 'ok'));
+      card.appendChild(line('Du hast getippt:', el('span', { text: res.ans ? partName(fig.svg, res.ans) : '(nichts)' })));
+      if (!full) { card.appendChild(line('Richtig:', el('span', { text: partName(fig.svg, t.target) }))); card.appendChild(fig); }
+    } else if (t.type === 'ordnen') {
+      const names = t.imgs ? t.names : t.parts;
+      const mine = (res.ans || []).map((p) => names[t.parts.indexOf(p)]);
+      card.appendChild(line('Deine Reihenfolge:', el('span', { text: mine.length ? mine.join(' → ') : '(leer)' })));
+      if (!full) card.appendChild(line('Richtig:', el('span', { text: names.join(' → ') })));
+    } else if (t.type === 'tabelle') {
+      const state = (res.ans || t.rows.map(() => t.cols.map(() => 0))).map((r) => r.slice());
+      const tb = tickTable(t, state);
+      tb.reveal();
+      card.appendChild(el('div', { class: 'tick-wrap' }, tb));
+      if (!full) card.appendChild(el('p', { class: 'small muted', text: 'Grün = richtig. Rot durchgestrichen = gehört nicht hin.' }));
+    } else if (t.type === 'antwort') {
+      card.appendChild(line('Deine Antwort:', el('span', { text: (res.ans || '').trim() || '(leer)' })));
+      if (res.r) card.appendChild(checklistEl(res.r.res));
+      card.appendChild(el('div', { class: 'solution' }, el('span', { class: 'small muted', text: 'Musterlösung' }), el('p', { class: 'model', text: t.model })));
+    }
+  }
   function renderExamResult() {
     const st = examState, k = st.k;
     const s = subjectById(k._subject);
@@ -1552,6 +2157,11 @@
       const card = el('section', { class: 'card task-res ' + (full ? 'ok' : res.p > 0 ? 'warn' : 'bad') },
         el('div', { class: 'task-head' }, el('span', { class: 'cell-chip', text: t.cell || ('Aufgabe ' + (i + 1)) }), el('b', { text: fmtP(res.p) + ' / ' + t.points + ' P' })),
         el('p', { class: 'small', text: t.prompt }));
+      if (!k.sheet && t.type !== 'wahl') {
+        examResultDetail(card, t, res, full);
+        parts.push(card);
+        return;
+      }
       if (t.type === 'wahl') {
         if (res.choice !== undefined) card.appendChild(el('div', { class: 'small' }, 'Deine Wahl: ', optionNode(t.options[res.choice])));
         const c = t.options.find((o) => o.ok);
@@ -1566,8 +2176,9 @@
       parts.push(card);
     });
     if (weakTopics.size) {
+      const kinds = s.levelStyle === 'bio' ? ['luecke', 'wahl', 'bild', 'tabelle'] : ['formel'];
       parts.push(el('button', { class: 'btn primary block', style: { background: s.color }, onclick: () => {
-        const items = [...weakTopics].map(topicById).filter(Boolean).flatMap((t) => t.exercises).filter((e) => e.type === 'formel');
+        const items = [...weakTopics].map(topicById).filter(Boolean).flatMap((t) => t.exercises).filter((e) => kinds.includes(e.type));
         examState = null;
         startSession(interleave(shuffle(items)).slice(0, 10), 'Schwächen üben', pathHash(s));
       } }, 'Schwache Themen üben'));
@@ -1582,11 +2193,17 @@
   function viewSettings() {
     screen({ title: 'Einstellungen', back: lastRest },
       el('a', { class: 'link-row card', href: '#/faecher' }, icon('grid'), el('span', { text: 'Fächer wählen' }), icon('chev', 'chev')),
+      el('section', { class: 'card' }, el('b', { text: 'Größe' }),
+        el('p', { class: 'small muted', text: 'Auf iPad und PC ist die App schon größer. Hier kannst du sie noch größer oder kleiner machen.' }),
+        el('div', { class: 'seg size-seg' }, SIZE_STEPS.map(([id, label]) => el('button', {
+          class: 'seg-btn' + ((P.settings.size || 'normal') === id ? ' on' : ''),
+          onclick: () => { P.settings.size = id; saveP(); applySize(true); viewSettings(); }
+        }, label)))),
       el('section', { class: 'card' }, el('b', { text: 'App aufs Handy legen' }),
         el('p', { class: 'small', text: 'iPhone: Seite in Safari öffnen → Teilen → „Zum Home-Bildschirm“.' }),
         el('p', { class: 'small', text: 'Android: Seite in Chrome öffnen → ⋮ → „App installieren“.' })),
       el('section', { class: 'card' }, el('b', { text: 'Fortschritt' }), el('p', { class: 'small muted', text: 'Dein Fortschritt, deine Sterne, Medaillen und dein Streak werden nur auf diesem Gerät gespeichert.' }),
-        el('button', { class: 'btn ghost block', onclick: () => { if (confirm('Wirklich den ganzen Fortschritt löschen (auch Level, Medaillen und Streak)?')) { P = defaults(); saveP(); toast('Fortschritt gelöscht'); go('#/'); } } }, 'Fortschritt löschen')),
+        el('button', { class: 'btn ghost block', onclick: () => { if (confirm('Wirklich den ganzen Fortschritt löschen (auch Level, Medaillen und Streak)?')) { P = defaults(); saveP(); applySize(true); toast('Fortschritt gelöscht'); go('#/'); } } }, 'Fortschritt löschen')),
       el('section', { class: 'card' }, el('b', { text: 'Abmelden' }), el('p', { class: 'small muted', text: 'Beim nächsten Öffnen wird wieder nach dem Kennwort gefragt.' }),
         el('button', { class: 'btn ghost block', onclick: () => { LCrypto.forgetKey(); location.hash = ''; location.reload(); } }, 'Abmelden')),
       el('p', { class: 'small muted center', text: 'Lernapp · Stand ' + (META.built || '') }));
@@ -1641,6 +2258,9 @@
       ids(sid) {
         const s = subjectById(sid);
         return s.topics.flatMap((t) => t.exercises.flatMap((e) => [e.id].concat((e.type === 'formel' || e.type === 'luecke') ? [3, 4].map((n) => asChoice(e, n)).filter(Boolean).map((x) => x.id) : [])));
+      },
+      // Bild-Teile prüfen (für die Tests): gibt es jedes Ziel und jede Hervorhebung im Bild?
+      parts(key) { const d = el('div', { html: IMAGES.get(key) || '' }); return [...d.querySelectorAll('[data-part]')].map((g) => g.dataset.part);
       },
       play(ids) { startSession(ids.map(exById).filter(Boolean), 'Test', '#/', null); },
       subject(sid) { P.cur = sid; saveP(); },
